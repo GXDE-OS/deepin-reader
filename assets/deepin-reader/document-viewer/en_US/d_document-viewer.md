@@ -44,7 +44,7 @@ Document Viewer realizes basic document management such as opening files, saving
 
 ### Open files
 
-Document Viewer supports PDF and DJVU formats. You can open a file by: 
+Document Viewer supports DOCX, PDF and DJVU formats. You can open a file by: 
 
 - Dragging it directly into the interface or onto the icon. 
 - Right-clicking it and selecting **Open with** > **Document Viewer**. After setting Document Viewer as the default program, you can open it by double-clicking it directly.
@@ -68,11 +68,7 @@ To print you have to connect and configure a printer.
 3. In this previewing interface, click **Advanced** to set the page size, print method and other parameters. 
 4. Click **Print**  then the document will be sent to the printer for printing. 
 
-![preview](fig/previewdoc1.png)
-
-![pagesetup](fig/pageSetupdoc.png)
-
-
+![preview](fig/printer.png)
 
 ### Manage tabs
 
@@ -147,9 +143,9 @@ Document Viewer integrates many features to make document management simpler and
 This function is only applicable for the current tab.
 1. On Document Viewer interface, open a file. 
 2. Right-click and select **Search** or press **Ctrl**+**F** to open a searching window. 
-   
+  
 3. In the searching box, you can click ![search](../common/search.svg) to input keywords. 
-   
+  
 4. Press  **Enter** to locate quickly. 
    - All matching information will be displayed in a list and are highlighted in the document.
    - If searching fails, "No search results" will be displayed. 
@@ -241,7 +237,7 @@ In the scaling drop-down box of tool bar, you can:
 
 ## Main Menu
 
-In the main menu, you can create new window and new tabs, [save documents](#Save documents), [search](#Search), switch themes, view help to know more about Document Viewer. 
+In the main menu, you can create new window and new tabs, [save documents](#Save documents), [search](#Search), [print documents](#Print documents) switch themes, view help to know more about Document Viewer. 
 
 ### Display in file manager
 

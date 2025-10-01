@@ -10,6 +10,8 @@
 #include "DocSheet.h"
 #include "MsgHeader.h"
 #include "Utils.h"
+#include "ddlog.h"
+#include <QDebug>
 
 #include <DFontSizeManager>
 #include <DFrame>
@@ -27,11 +29,12 @@ public:
     explicit ImageWidget(DWidget *parent)
         : DWidget(parent)
     {
-
+        // qCDebug(appLog) << "ImageWidget created, parent:" << parent;
     }
 
     void setPixmap(const QPixmap &pixmap)
     {
+        // qCDebug(appLog) << "Setting pixmap for ImageWidget";
         if (!pixmap.isNull()) {
             m_pixmap = pixmap;
             update();
@@ -47,6 +50,7 @@ private:
 
 void ImageWidget::paintEvent(QPaintEvent *event)
 {
+    // qCDebug(appLog) << "Painting ImageWidget";
     DWidget::paintEvent(event);
     QPainter painter(this);
     painter.drawPixmap(static_cast<int>(this->width() * 0.5 - m_pixmap.width() * 0.5 / m_pixmap.devicePixelRatioF()),  static_cast<int>(this->height() * 0.5 - m_pixmap.height() * 0.5 / m_pixmap.devicePixelRatioF()), m_pixmap);
@@ -55,6 +59,7 @@ void ImageWidget::paintEvent(QPaintEvent *event)
 FileAttrWidget::FileAttrWidget(DWidget *parent)
     : DAbstractDialog(parent)
 {
+    qCDebug(appLog) << "FileAttrWidget created, parent:" << parent;
     setFixedSize(QSize(300, 622));
     m_pVBoxLayout = new QVBoxLayout;
     m_pVBoxLayout->setContentsMargins(0, 0, 0, 10);
@@ -64,10 +69,12 @@ FileAttrWidget::FileAttrWidget(DWidget *parent)
 
 FileAttrWidget::~FileAttrWidget()
 {
+    // qCDebug(appLog) << "FileAttrWidget destroyed";
 }
 
 void FileAttrWidget::setFileAttr(DocSheet *sheet)
 {
+    qCDebug(appLog) << "Setting file attributes for sheet:" << (sheet ? "valid" : "null");
     if (sheet == nullptr)
         return;
 
@@ -76,6 +83,7 @@ void FileAttrWidget::setFileAttr(DocSheet *sheet)
     int tmpWidth = static_cast<int>(94 * dApp->devicePixelRatio());
     int tmpHeight = static_cast<int>(tmpWidth * aspectRatio);
     if (tmpHeight > static_cast<int>(113 * dApp->devicePixelRatio())) { // 使打印的图片保持原始图片的宽高比
+        qCDebug(appLog) << "tmpHeight > static_cast<int>(113 * dApp->devicePixelRatio())";
         tmpHeight = static_cast<int>(113 * dApp->devicePixelRatio());
         tmpWidth = static_cast<int>(tmpHeight / aspectRatio);
     }
@@ -83,6 +91,7 @@ void FileAttrWidget::setFileAttr(DocSheet *sheet)
     image.setDevicePixelRatio(dApp->devicePixelRatio());
 
     if (!image.isNull() && frameImage) {
+        qCDebug(appLog) << "image is not null and frameImage is not null";
         const QPixmap &pix = Utils::roundQPixmap(QPixmap::fromImage(image), 8);
         frameImage->setPixmap(pix);
     }
@@ -118,10 +127,12 @@ void FileAttrWidget::setFileAttr(DocSheet *sheet)
     scrolllayout->addWidget(infoframe);
 
     m_pVBoxLayout->addLayout(scrolllayout, 1);
+    qCDebug(appLog) << "File attributes set, image loaded:" << (!image.isNull() ? "success" : "failed");
 }
 
 void FileAttrWidget::addTitleFrame(const QString &sData)
 {
+    qCDebug(appLog) << "Adding title frame";
     WordWrapLabel *labelText = new WordWrapLabel(this);
     DFontSizeManager::instance()->bind(labelText, DFontSizeManager::T8);
     labelText->setFixedWidth(this->width());
@@ -130,22 +141,26 @@ void FileAttrWidget::addTitleFrame(const QString &sData)
     labelText->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     labelText->setText(labelText->fontMetrics().elidedText(sData, Qt::ElideMiddle, 680));
     m_pVBoxLayout->addWidget(labelText);
+    qCDebug(appLog) << "Adding title frame end";
 }
 
 void FileAttrWidget::showScreenCenter()
 {
+    qCDebug(appLog) << "Showing file attribute widget at screen center";
     Dtk::Widget::moveToCenter(this);
     this->show();
 }
 
 void FileAttrWidget::initWidget()
 {
+    qCDebug(appLog) << "Initializing file attribute widget";
     initCloseBtn();
     initImageLabel();
 }
 
 void FileAttrWidget::initCloseBtn()
 {
+    qCDebug(appLog) << "Initializing close button";
     auto layout = new QHBoxLayout;
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addStretch(0);
@@ -163,6 +178,7 @@ void FileAttrWidget::initCloseBtn()
     } else {
         closeButton->setFixedSize(QSize(40, 40));
         closeButton->setIconSize(QSize(40, 40));
+        qCDebug(appLog) << "File attribute widget initialization completed";
     }
     connect(DGuiApplicationHelper::instance(), &DGuiApplicationHelper::sizeModeChanged, this, [=](DGuiApplicationHelper::SizeMode sizeMode) {
         if (sizeMode == DGuiApplicationHelper::NormalMode) {
@@ -175,10 +191,12 @@ void FileAttrWidget::initCloseBtn()
     });
 #endif
     m_pVBoxLayout->addItem(layout);
+    qCDebug(appLog) << "Initializing close button end";
 }
 
 void FileAttrWidget::initImageLabel()
 {
+    qCDebug(appLog) << "Initializing image label";
     frameImage = new ImageWidget(this);
     frameImage->setFixedSize(98, 117);
 
@@ -188,4 +206,5 @@ void FileAttrWidget::initImageLabel()
     vlayout->addWidget(frameImage);
 
     m_pVBoxLayout->addItem(vlayout);
+    qCDebug(appLog) << "Initializing image label end";
 }

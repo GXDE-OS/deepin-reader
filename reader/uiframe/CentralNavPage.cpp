@@ -5,6 +5,7 @@
 
 #include "CentralNavPage.h"
 #include "MainWindow.h"
+#include "ddlog.h"
 
 #include <DLabel>
 #include <DPushButton>
@@ -17,14 +18,20 @@
 CentralNavPage::CentralNavPage(DWidget *parent)
     : BaseWidget(parent)
 {
+    qCDebug(appLog) << "Initializing CentralNavPage...";
     auto tipsLabel = new DLabel(tr("Drag documents here"), this);
     tipsLabel->setAccessibleName("Label_Drag documents here");
     tipsLabel->setAlignment(Qt::AlignHCenter);
     tipsLabel->setForegroundRole(DPalette::TextTips);
     DFontSizeManager::instance()->bind(tipsLabel, DFontSizeManager::T8);
 
+#ifdef XPS_SUPPORT_ENABLED
+    auto formatLabel = new DLabel(tr("Format supported: %1").arg("PDF,DJVU,DOCX,XPS"), this);
+    formatLabel->setAccessibleName(QString("Label_format supported: %1").arg("PDF,DJVU,DOCX,XPS"));
+#else
     auto formatLabel = new DLabel(tr("Format supported: %1").arg("PDF,DJVU,DOCX"), this);
     formatLabel->setAccessibleName(QString("Label_format supported: %1").arg("PDF,DJVU,DOCX"));
+#endif
     formatLabel->setAlignment(Qt::AlignHCenter);
     formatLabel->setForegroundRole(DPalette::TextTips);
     DFontSizeManager::instance()->bind(formatLabel, DFontSizeManager::T8);
@@ -70,6 +77,7 @@ CentralNavPage::CentralNavPage(DWidget *parent)
 //  主题切换
 void CentralNavPage::onThemeChanged()
 {
+    qCDebug(appLog) << "Theme changed, updating UI";
     auto iconSvg = this->findChild<DLabel *>("iconSvg");
     if (iconSvg) {
         auto plt = Dtk::Gui::DGuiApplicationHelper::instance()->applicationPalette();

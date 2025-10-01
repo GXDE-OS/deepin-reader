@@ -19,6 +19,7 @@
 #include "PageSearchThread.h"
 #include "BrowserPage.h"
 #include "MainWindow.h"
+#include "ddlog.h"
 
 #include <DSpinner>
 #include <DPrintPreviewDialog>
@@ -52,6 +53,7 @@ QString DocSheet::g_lastOperationFile;
 DocSheet::DocSheet(const Dr::FileType &fileType, const QString &filePath,  QWidget *parent)
     : DSplitter(parent), m_filePath(filePath), m_fileType(fileType)
 {
+    qCDebug(appLog) << "Creating DocSheet for file:" << filePath;
     setAlive(true);
     setHandleWidth(5);
     setChildrenCollapsible(false);  //  子部件不可拉伸到 0
@@ -90,15 +92,18 @@ DocSheet::DocSheet(const Dr::FileType &fileType, const QString &filePath,  QWidg
     resetChildParent();
     this->insertWidget(0, m_browser);
     this->insertWidget(0, m_sidebar);
+    qCDebug(appLog) << "DocSheet created end";
 }
 
 DocSheet::~DocSheet()
 {
-    qDebug() << "正在释放当前 sheet ...";
+    qCDebug(appLog) << "正在释放当前 sheet ...";
     // 结束正在进行的命令process
     if (nullptr != m_process) {
+        // qCDebug(appLog) << "m_process is not null";
         __pid_t processid = static_cast<__pid_t>(m_process->processId());
         if (0 < processid) {
+            // qCDebug(appLog) << "kill processid:" << processid;
             kill(processid, SIGKILL);
         }
     }
@@ -119,11 +124,12 @@ DocSheet::~DocSheet()
 
     if (nullptr != m_tempDir)
         delete m_tempDir;
-    qDebug() << "当前 sheet 已释放";
+    qCDebug(appLog) << "当前 sheet 已释放";
 }
 
 QImage DocSheet::firstThumbnail(const QString &filePath)
 {
+    qCDebug(appLog) << "firstThumbnail";
     //获取首页缩略图
     foreach (DocSheet *sheet, g_sheetList) {
         if (sheet->filePath() == filePath) {
@@ -137,6 +143,7 @@ QImage DocSheet::firstThumbnail(const QString &filePath)
 
 bool DocSheet::existFileChanged()
 {
+    qCDebug(appLog) << "existFileChanged";
     bool changed = false;
 
     g_lock.lockForRead();
@@ -150,11 +157,13 @@ bool DocSheet::existFileChanged()
 
     g_lock.unlock();
 
+    qCDebug(appLog) << "existFileChanged end";
     return changed;
 }
 
 QUuid DocSheet::getUuid(DocSheet *sheet)
 {
+    qCDebug(appLog) << "getUuid";
     g_lock.lockForRead();
 
     // 将 QString 转换为 QUuid
@@ -162,33 +171,39 @@ QUuid DocSheet::getUuid(DocSheet *sheet)
 
     g_lock.unlock();
 
+    qCDebug(appLog) << "getUuid end";
     return uuid;
 }
 
 bool DocSheet::existSheet(DocSheet *sheet)
 {
+    qCDebug(appLog) << "existSheet";
     g_lock.lockForRead();
 
     bool result = g_sheetList.contains(sheet);
 
     g_lock.unlock();
 
+    qCDebug(appLog) << "existSheet end";
     return result;
 }
 
 DocSheet *DocSheet::getSheet(QString uuid)
 {
+    qCDebug(appLog) << "getSheet";
     g_lock.lockForRead();
 
     DocSheet *sheet = g_sheetList.value(g_uuidList.indexOf(uuid));
 
     g_lock.unlock();
 
+    qCDebug(appLog) << "getSheet end";
     return sheet;
 }
 
 DocSheet *DocSheet::getSheetByFilePath(QString filePath)
 {
+    qCDebug(appLog) << "getSheetByFilePath";
     g_lock.lockForRead();
 
     DocSheet *result = nullptr;
@@ -202,51 +217,65 @@ DocSheet *DocSheet::getSheetByFilePath(QString filePath)
 
     g_lock.unlock();
 
+    qCDebug(appLog) << "getSheetByFilePath end";
     return result;
 }
 
 QList<DocSheet *> DocSheet::getSheets()
 {
+    // qCDebug(appLog) << "getSheets";
     return DocSheet::g_sheetList;
 }
 
 bool DocSheet::openFileExec(const QString &password)
 {
+    qCDebug(appLog) << "Executing file open synchronously";
     m_password = password;
 
-    return m_renderer->openFileExec(password);
+    bool result = m_renderer->openFileExec(password);
+    if (!result) {
+        qCWarning(appLog) << "Failed to open file synchronously";
+    }
+    qCDebug(appLog) << "openFileExec end";
+    return result;
 }
 
 void DocSheet::openFileAsync(const QString &password)
 {
+    qCDebug(appLog) << "openFileAsync";
     m_password = password;
 
-    qInfo() << "添加异步打开任务...";
+    qCInfo(appLog) << "添加异步打开任务...";
     m_renderer->openFileAsync(m_password);
 }
 
 void DocSheet::jumpToPage(int page)
 {
+    qCDebug(appLog) << "Jumping to page:" << page;
     m_browser->setCurrentPage(page);
 }
 
 void DocSheet::jumpToIndex(int index)
 {
+    qCDebug(appLog) << "jumpToIndex";
     m_browser->setCurrentPage(index + 1);
 }
 
 void DocSheet::jumpToFirstPage()
 {
+    qCDebug(appLog) << "jumpToFirstPage";
     m_browser->setCurrentPage(1);
 }
 
 void DocSheet::jumpToLastPage()
 {
+    qCDebug(appLog) << "jumpToLastPage";
     jumpToPage(m_browser->allPages());
 }
 
 void DocSheet::jumpToNextPage()
 {
+    qCDebug(appLog) << "jumpToNextPage";
     int page = m_browser->currentPage() + (m_operation.layoutMode == Dr::TwoPagesMode ? 2 : 1);
 
     page = page >= m_browser->allPages() ? m_browser->allPages() : page;
@@ -256,6 +285,7 @@ void DocSheet::jumpToNextPage()
 
 void DocSheet::jumpToPrevPage()
 {
+    qCDebug(appLog) << "jumpToPrevPage";
     int page = m_browser->currentPage() - (m_operation.layoutMode == Dr::TwoPagesMode ? 2 : 1);
 
     page = qMax(1, page);
@@ -265,21 +295,25 @@ void DocSheet::jumpToPrevPage()
 
 deepin_reader::Outline DocSheet::outline()
 {
+    qCDebug(appLog) << "outline";
     return m_renderer->outline();
 }
 
 void DocSheet::jumpToOutline(const qreal  &left, const qreal &top, int index)
 {
+    qCDebug(appLog) << "jumpToOutline";
     m_browser->jumpToOutline(left, top, index);
 }
 
 void DocSheet::jumpToHighLight(deepin_reader::Annotation *annotation, const int index)
 {
+    qCDebug(appLog) << "jumpToHighLight";
     m_browser->jumpToHighLight(annotation, index);
 }
 
 void DocSheet::rotateLeft()
 {
+    qCDebug(appLog) << "rotateLeft";
     if (Dr::RotateBy0 == m_operation.rotation)
         m_operation.rotation = Dr::RotateBy270;
     else if (Dr::RotateBy270 == m_operation.rotation)
@@ -292,10 +326,12 @@ void DocSheet::rotateLeft()
     m_browser->deform(m_operation);
     m_sidebar->handleRotate();
     setOperationChanged();
+    qCDebug(appLog) << "rotateLeft end";
 }
 
 void DocSheet::rotateRight()
 {
+    qCDebug(appLog) << "rotateRight";
     if (Dr::RotateBy0 == m_operation.rotation)
         m_operation.rotation = Dr::RotateBy90;
     else if (Dr::RotateBy90 == m_operation.rotation)
@@ -308,10 +344,12 @@ void DocSheet::rotateRight()
     m_browser->deform(m_operation);
     m_sidebar->handleRotate();
     setOperationChanged();
+    qCDebug(appLog) << "rotateRight end";
 }
 
 void DocSheet::setBookMark(int index, int state)
 {
+    qCDebug(appLog) << "setBookMark";
     if (index < 0 || index >= pageCount())
         return;
 
@@ -328,10 +366,12 @@ void DocSheet::setBookMark(int index, int state)
     m_browser->setBookMark(index, state);
 
     setBookmarkChanged(true);
+    qCDebug(appLog) << "setBookMark end";
 }
 
 void DocSheet::setBookMarks(const QList<int> &indexlst, int state)
 {
+    qCDebug(appLog) << "setBookMarks";
     for (int index : indexlst) {
         if (state)
             m_bookmarks.insert(index);
@@ -349,15 +389,18 @@ void DocSheet::setBookMarks(const QList<int> &indexlst, int state)
         showTips(tr("The bookmark has been removed"));
 
     setBookmarkChanged(true);
+    qCDebug(appLog) << "setBookMarks end";
 }
 
 int DocSheet::pageCount()
 {
+    qCDebug(appLog) << "pageCount";
     return m_renderer->getPageCount();
 }
 
 int DocSheet::currentPage()
 {
+    qCDebug(appLog) << "currentIndex";
     if (m_operation.currentPage < 1 || m_operation.currentPage > pageCount())
         return 1;
 
@@ -366,6 +409,7 @@ int DocSheet::currentPage()
 
 int DocSheet::currentIndex()
 {
+    qCDebug(appLog) << "currentIndex";
     if (m_operation.currentPage < 1 || m_operation.currentPage > pageCount())
         return 0;
 
@@ -374,6 +418,7 @@ int DocSheet::currentIndex()
 
 void DocSheet::setLayoutMode(Dr::LayoutMode mode)
 {
+    qCDebug(appLog) << "setLayoutMode";
     if (mode == m_operation.layoutMode)
         return;
 
@@ -382,39 +427,49 @@ void DocSheet::setLayoutMode(Dr::LayoutMode mode)
         m_browser->deform(m_operation);
         setOperationChanged();
     }
+    qCDebug(appLog) << "setLayoutMode end";
 }
 
 void DocSheet::setMouseShape(Dr::MouseShape shape)
 {
+    qCDebug(appLog) << "setMouseShape";
     if (shape >= Dr::MouseShapeNormal && shape < Dr::NumberOfMouseShapes) {
+        qCDebug(appLog) << "setMouseShape";
         closeMagnifier();
         m_operation.mouseShape = shape;
         m_browser->setMouseShape(m_operation.mouseShape);
         setOperationChanged();
     }
+    qCDebug(appLog) << "setMouseShape end";
 }
 
 void DocSheet::setAnnotationInserting(bool inserting)
 {
+    qCDebug(appLog) << "setAnnotationInserting";
     if (nullptr == m_browser)
         return;
 
     m_browser->setAnnotationInserting(inserting);
+    qCDebug(appLog) << "setAnnotationInserting end";
 }
 
 QPixmap DocSheet::thumbnail(int index)
 {
+    // qCDebug(appLog) << "thumbnail";
     return m_thumbnailMap.value(index);
 }
 
 void DocSheet::setThumbnail(int index, QPixmap pixmap)
 {
+    // qCDebug(appLog) << "setThumbnail";
     m_thumbnailMap[index] = pixmap;
 }
 
 void DocSheet::setScaleMode(Dr::ScaleMode mode)
 {
+    qCDebug(appLog) << "setScaleMode";
     if (mode >= Dr::ScaleFactorMode && mode <= Dr::FitToPageWorHMode) {
+        qCDebug(appLog) << "setScaleMode";
         m_operation.scaleMode = mode;
 
         m_browser->deform(m_operation);
@@ -422,10 +477,12 @@ void DocSheet::setScaleMode(Dr::ScaleMode mode)
         setOperationChanged();
 
     }
+    qCDebug(appLog) << "setScaleMode end";
 }
 
 void DocSheet::setScaleFactor(qreal scaleFactor)
 {
+    qCDebug(appLog) << "setScaleFactor";
     if (Dr::ScaleFactorMode == m_operation.scaleMode && qFuzzyCompare(scaleFactor, m_operation.scaleFactor))
         return;
 
@@ -438,20 +495,23 @@ void DocSheet::setScaleFactor(qreal scaleFactor)
     m_browser->deform(m_operation);
 
     setOperationChanged();
+    qCDebug(appLog) << "setScaleFactor end";
 }
 
 QImage DocSheet::getImage(int index, int width, int height, const QRect &slice)
 {
+    qCDebug(appLog) << "getImage";
     return m_renderer->getImage(index, width, height, slice);;
 }
 
 bool DocSheet::fileChanged()
 {
+    qCDebug(appLog) << "fileChanged";
     return (m_documentChanged || m_bookmarkChanged);
 }
-
 bool DocSheet::saveData()
 {
+    qCDebug(appLog) << "Saving document data";
     PERF_PRINT_BEGIN("POINT-04", QString("filename=%1,filesize=%2").arg(QFileInfo(this->filePath()).fileName()).arg(QFileInfo(this->filePath()).size()));
 
     //文档改变或者原文档被删除 则进行数据保存
@@ -469,12 +529,13 @@ bool DocSheet::saveData()
 
     return true;
 }
-
 bool DocSheet::saveAsData(QString targetFilePath)
 {
+    qCDebug(appLog) << "Saving document as:" << targetFilePath;
     stopSearch();
 
     if (m_documentChanged && Dr::DOCX != fileType()) {
+        qCDebug(appLog) << "Saving document as:" << targetFilePath;
         if (!m_renderer->saveAs(targetFilePath))
             return false;
     } else {
@@ -482,6 +543,7 @@ bool DocSheet::saveAsData(QString targetFilePath)
         QString saveAsSourceFilePath = openedFilePath();
 
         if (m_documentChanged) {
+            qCDebug(appLog) << "Saving document as:" << targetFilePath;
             saveAsSourceFilePath = convertedFileDir() + "/saveAsTemp.pdf";
             if (!m_renderer->saveAs(saveAsSourceFilePath))
                 return false;
@@ -495,34 +557,39 @@ bool DocSheet::saveAsData(QString targetFilePath)
 
     m_sidebar->changeResetModelData();
 
+    qCDebug(appLog) << "saveAsData end";
     return true;
 }
 
 void DocSheet::handlePageModified(int index)
 {
+    qCDebug(appLog) << "handlePageModified";
     emit sigPageModified(index);
 }
 
 void DocSheet::copySelectedText()
 {
+    qCDebug(appLog) << "copySelectedText";
     QString selectedWordsText = m_browser->selectedWordsText();
     if (selectedWordsText.isEmpty())
         return;
 #if _ZPD_
     int intercept = 0;
     if (getLoadLibsInstance()->m_document_clip_copy) {
-        qInfo() << "当前文档: ***"/* << filePath()*/;
+        qCInfo(appLog) << "当前文档: ***"/* << filePath()*/;
         getLoadLibsInstance()->m_document_clip_copy(filePath().toLocal8Bit().data(), &intercept);
-        qInfo() << "是否拦截不允许复制(1:拦截 0:不拦截): " << intercept;
+        qCInfo(appLog) << "是否拦截不允许复制(1:拦截 0:不拦截): " << intercept;
     }
     if (intercept > 0) return;
 #endif
     QClipboard *clipboard = DApplication::clipboard();  //获取系统剪贴板指针
     clipboard->setText(selectedWordsText);
+    qCDebug(appLog) << "copySelectedText end";
 }
 
 void DocSheet::highlightSelectedText()
 {
+    qCDebug(appLog) << "highlightSelectedText";
     if (!m_browser || (fileType() != Dr::FileType::PDF && fileType() != Dr::FileType::DOCX))
         return;
 
@@ -534,10 +601,12 @@ void DocSheet::highlightSelectedText()
     QPoint ponintend;
 
     m_browser->addHighLightAnnotation("", Utils::getCurHiglightColor(), ponintend);
+    qCDebug(appLog) << "highlightSelectedText end";
 }
 
 void DocSheet::addSelectedTextHightlightAnnotation()
 {
+    qCDebug(appLog) << "addSelectedTextHightlightAnnotation";
     if (!m_browser || (fileType() != Dr::FileType::PDF && fileType() != Dr::FileType::DOCX))
         return;
 
@@ -553,28 +622,36 @@ void DocSheet::addSelectedTextHightlightAnnotation()
 
     if (annot)
         m_browser->showNoteEditWidget(annot, ponintend);
+    qCDebug(appLog) << "addSelectedTextHightlightAnnotation end";
 }
 
 void DocSheet::openMagnifier()
 {
+    qCDebug(appLog) << "openMagnifier";
     if (m_browser)
         m_browser->openMagnifier();
+    qCDebug(appLog) << "openMagnifier end";
 }
 
 void DocSheet::closeMagnifier()
 {
+    qCDebug(appLog) << "closeMagnifier";
     if (m_browser)
         m_browser->closeMagnifier();
+    qCDebug(appLog) << "closeMagnifier end";
 }
 
 void DocSheet::defaultFocus()
 {
+    qCDebug(appLog) << "defaultFocus";
     if (m_browser)
         m_browser->setFocus();
+    qCDebug(appLog) << "defaultFocus end";
 }
 
 bool DocSheet::magnifierOpened()
 {
+    qCDebug(appLog) << "magnifierOpened";
     if (m_browser)
         return m_browser->magnifierOpened();
     return false;
@@ -582,6 +659,7 @@ bool DocSheet::magnifierOpened()
 
 QList<deepin_reader::Annotation *> DocSheet::annotations()
 {
+    // qCDebug(appLog) << "annotations";
     if (nullptr == m_browser)
         return QList< deepin_reader::Annotation * > ();
 
@@ -590,24 +668,29 @@ QList<deepin_reader::Annotation *> DocSheet::annotations()
 
 bool DocSheet::removeAnnotation(deepin_reader::Annotation *annotation, bool tips)
 {
+    // qCDebug(appLog) << "removeAnnotation";
     int ret = m_browser->removeAnnotation(annotation);
     if (ret && tips) {
         this->showTips(tr("The annotation has been removed"));
     }
+    qCDebug(appLog) << "removeAnnotation end, ret:" << ret;
     return ret;
 }
 
 bool DocSheet::removeAllAnnotation()
 {
+    // qCDebug(appLog) << "removeAllAnnotation";
     bool ret = m_browser->removeAllAnnotation();
     if (ret) {
         this->showTips(tr("The annotation has been removed"));
     }
+    qCDebug(appLog) << "removeAllAnnotation end, ret:" << ret;
     return ret;
 }
 
 QList<qreal> DocSheet::scaleFactorList()
 {
+    qCDebug(appLog) << "scaleFactorList";
     QList<qreal> dataList = {0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3, 4, 5};
     QList<qreal> factorList;
 
@@ -618,20 +701,24 @@ QList<qreal> DocSheet::scaleFactorList()
             factorList.append(factor);
     }
 
+    qCDebug(appLog) << "scaleFactorList end, factorList:" << factorList;
     return  factorList;
 }
 
 qreal DocSheet::maxScaleFactor()
 {
+    qCDebug(appLog) << "maxScaleFactor";
     qreal maxScaleFactor = 20000 / (m_browser->maxHeight() * qApp->devicePixelRatio());
 
     maxScaleFactor = qBound(0.1, maxScaleFactor, 5.0);
 
+    qCDebug(appLog) << "maxScaleFactor end, maxScaleFactor:" << maxScaleFactor;
     return maxScaleFactor;
 }
 
 QString DocSheet::filter()
 {
+    qCDebug(appLog) << "filter";
     if (Dr::PDF == m_fileType)
         return  "Pdf File (*.pdf)";
     else if (Dr::DOCX == m_fileType)
@@ -639,50 +726,62 @@ QString DocSheet::filter()
     else if (Dr::DJVU == m_fileType)
         return "Djvu files (*.djvu)";
 
+    qCDebug(appLog) << "filter end, return:";
     return "";
 }
 
 QString DocSheet::format()
 {
+    qCDebug(appLog) << "format";
     if (Dr::PDF == m_fileType) {
+        qCDebug(appLog) << "filter end, return:";
         const Properties &propertys = m_renderer->properties();
         return QString("PDF %1").arg(propertys.value("Version").toString());
     } else if (Dr::DOCX == m_fileType) {//暂时作为pdf处理
+        qCDebug(appLog) << "filter end, return:";
         const Properties &propertys = m_renderer->properties();
         return QString("PDF %1").arg(propertys.value("Version").toString());
     } else if (Dr::DJVU == m_fileType) {
+        qCDebug(appLog) << "filter end, return:";
         return QString("DJVU");
     }
+    qCDebug(appLog) << "format end, return:";
     return "";
 }
 
 QSet<int> DocSheet::getBookMarkList() const
 {
+    // qCDebug(appLog) << "getBookMarkList";
     return m_bookmarks;
 }
 
 SheetOperation DocSheet::operation() const
 {
+    // qCDebug(appLog) << "operation";
     return m_operation;
 }
 
 SheetOperation &DocSheet::operationRef()
 {
+    // qCDebug(appLog) << "operationRef";
     return m_operation;
 }
 
 Dr::FileType DocSheet::fileType()
 {
+    // qCDebug(appLog) << "fileType";
     return m_fileType;
 }
 
 QString DocSheet::filePath()
 {
+    // qCDebug(appLog) << "filePath";
     return m_filePath;
 }
 
 QString DocSheet::openedFilePath()
 {
+    // qCDebug(appLog) << "openedFilePath";
     if (Dr::DOCX == fileType())
         return convertedFileDir() + "/temp.pdf";
 
@@ -691,20 +790,23 @@ QString DocSheet::openedFilePath()
 
 QString DocSheet::convertedFileDir()
 {
+    qCDebug(appLog) << "convertedFileDir";
     if (m_tempDir == nullptr)
         m_tempDir = new QTemporaryDir;
 
-    qDebug() << "临时目录: " << m_tempDir->path();
+    qCDebug(appLog) << "临时目录: " << m_tempDir->path();
     return m_tempDir->path();
 }
 
 bool DocSheet::hasBookMark(int index)
 {
+    qCDebug(appLog) << "hasBookMark";
     return m_bookmarks.contains(index);
 }
 
 void DocSheet::zoomin()
 {
+    qCDebug(appLog) << "zoomin";
     QList<qreal> dataList = scaleFactorList();
 
     for (int i = 0; i < dataList.count(); ++i) {
@@ -717,6 +819,7 @@ void DocSheet::zoomin()
 
 void DocSheet::zoomout()
 {
+    qCDebug(appLog) << "zoomout";
     QList<qreal> dataList = scaleFactorList();
 
     for (int i = dataList.count() - 1; i >= 0; --i) {
@@ -729,6 +832,7 @@ void DocSheet::zoomout()
 
 void DocSheet::showTips(const QString &tips, int iconIndex)
 {
+    qCDebug(appLog) << "showTips";
     CentralDocPage *doc = static_cast<CentralDocPage *>(parent());
     if (nullptr == doc)
         return;
@@ -738,8 +842,11 @@ void DocSheet::showTips(const QString &tips, int iconIndex)
 
 void DocSheet::onPrintRequested(DPrinter *printer, const QVector<int> &pageRange)
 {
-    if (pageRange.isEmpty())
+    qCDebug(appLog) << "Print requested for pages:" << pageRange;
+    if (pageRange.isEmpty()) {
+        qCWarning(appLog) << "Empty page range for printing";
         return;
+    }
 
     //后台加载动画
     QWidget *pCurWgt = nullptr;
@@ -779,10 +886,12 @@ void DocSheet::onPrintRequested(DPrinter *printer, const QVector<int> &pageRange
         if (i != pageRange.count() - 1)
             printer->newPage();
     }
+    qCDebug(appLog) << "onPrintRequested end";
 }
 
 void DocSheet::onPrintRequested(DPrinter *printer)
 {
+    // qCDebug(appLog) << "onPrintRequested";
     printer->setDocName(QFileInfo(filePath()).fileName());
 
     QPainter painter(printer);
@@ -844,10 +953,12 @@ void DocSheet::onPrintRequested(DPrinter *printer)
             printer->newPage();
     }
 #endif
+    // qCDebug(appLog) << "onPrintRequested end";
 }
 
 void DocSheet::openSlide()
 {
+    qCDebug(appLog) << "openSlide";
     CentralDocPage *doc = static_cast<CentralDocPage *>(parent());
     if (nullptr == doc)
         return;
@@ -857,6 +968,7 @@ void DocSheet::openSlide()
 
 void DocSheet::closeSlide()
 {
+    qCDebug(appLog) << "closeSlide";
     CentralDocPage *doc = static_cast<CentralDocPage *>(parent());
     if (nullptr == doc)
         return;
@@ -866,7 +978,9 @@ void DocSheet::closeSlide()
 
 void DocSheet::setSidebarVisible(bool isVisible, bool notify)
 {
+    qCDebug(appLog) << "setSidebarVisible";
     if (notify) {
+        qCDebug(appLog) << "setSidebarVisible notify";
         //左侧栏是否需要隐藏
         m_sidebar->setVisible(isVisible);
         m_operation.sidebarVisible = isVisible;
@@ -884,6 +998,7 @@ void DocSheet::setSidebarVisible(bool isVisible, bool notify)
 
         setOperationChanged();
     } else {
+        qCDebug(appLog) << "setSidebarVisible notify";
         if (m_sideAnimation == nullptr) {
             m_sideAnimation = new QPropertyAnimation(m_sidebar, "movepos");
             connect(m_sideAnimation, &QPropertyAnimation::finished, this, &DocSheet::onSideAniFinished);
@@ -916,24 +1031,31 @@ void DocSheet::setSidebarVisible(bool isVisible, bool notify)
         }
         m_sideAnimation->start();
     }
+    qCDebug(appLog) << "setSidebarVisible end";
 }
 
 void DocSheet::onSideAniFinished()
 {
+    qCDebug(appLog) << "onSideAniFinished";
     if (m_sidebar->pos().x() < 0) {
+        qCDebug(appLog) << "onSideAniFinished pos.x() < 0";
         m_sidebar->setVisible(false);
     }
 }
 
 void DocSheet::onOpened(deepin_reader::Document::Error error)
 {
+    qCDebug(appLog) << "onOpened";
     if (deepin_reader::Document::NeedPassword == error) {
+        qCDebug(appLog) << "onOpened NeedPassword";
         showEncryPage();
     } else if (deepin_reader::Document::WrongPassword == error) {
+        qCDebug(appLog) << "onOpened WrongPassword";
         showEncryPage();
 
         m_encryPage->wrongPassWordSlot();
     } else if (deepin_reader::Document::NoError == error) {
+        qCDebug(appLog) << "onOpened NoError";
         if (!m_password.isEmpty()) {
             m_browser->setFocusPolicy(Qt::StrongFocus);
 
@@ -957,10 +1079,12 @@ void DocSheet::onOpened(deepin_reader::Document::Error error)
 
     //交给父窗口控制自己是否删除
     emit sigFileOpened(this, error);
+    qCDebug(appLog) << "onOpened end";
 }
 
 bool DocSheet::isFullScreen()
 {
+    qCDebug(appLog) << "isFullScreen";
     CentralDocPage *doc = static_cast<CentralDocPage *>(parent());
 
     if (nullptr == doc)
@@ -971,6 +1095,7 @@ bool DocSheet::isFullScreen()
 
 void DocSheet::openFullScreen()
 {
+    qCDebug(appLog) << "openFullScreen";
     CentralDocPage *doc = static_cast<CentralDocPage *>(parent());
     if (nullptr == doc)
         return;
@@ -988,10 +1113,12 @@ void DocSheet::openFullScreen()
         m_browser->hideSubTipsWidget();
 
     doc->openFullScreen();
+    qCDebug(appLog) << "openFullScreen end";
 }
 
 bool DocSheet::closeFullScreen(bool force)
 {
+    qCDebug(appLog) << "closeFullScreen";
     CentralDocPage *doc = static_cast<CentralDocPage *>(parent());
     if (nullptr == doc)
         return false;
@@ -1012,14 +1139,17 @@ bool DocSheet::closeFullScreen(bool force)
             mainWindow->handleMainWindowExitFull();
         }
 
+        qCDebug(appLog) << "closeFullScreen end, return true";
         return true;
     }
 
+    qCDebug(appLog) << "closeFullScreen end, return false";
     return false;
 }
 
 void DocSheet::setDocumentChanged(bool changed)
 {
+    qCDebug(appLog) << "setDocumentChanged";
     m_documentChanged = changed;
 
     emit sigFileChanged(this);
@@ -1027,6 +1157,7 @@ void DocSheet::setDocumentChanged(bool changed)
 
 void DocSheet::setBookmarkChanged(bool changed)
 {
+    qCDebug(appLog) << "setBookmarkChanged";
     m_bookmarkChanged = changed;
 
     emit sigFileChanged(this);
@@ -1034,16 +1165,19 @@ void DocSheet::setBookmarkChanged(bool changed)
 
 void DocSheet::setOperationChanged()
 {
+    qCDebug(appLog) << "setOperationChanged";
     emit sigOperationChanged(this);
 }
 
 bool DocSheet::haslabel()
 {
+    // qCDebug(appLog) << "haslabel";
     return  m_renderer->pageHasLable();
 }
 
 void DocSheet::docBasicInfo(deepin_reader::FileInfo &tFileInfo)
 {
+    qCDebug(appLog) << "docBasicInfo";
     QFileInfo fileInfo(filePath());
     tFileInfo.size = fileInfo.size();
     tFileInfo.createTime = fileInfo.birthTime();
@@ -1062,10 +1196,12 @@ void DocSheet::docBasicInfo(deepin_reader::FileInfo &tFileInfo)
     tFileInfo.width = static_cast<unsigned int>(m_browser->maxWidth());
     tFileInfo.height = static_cast<unsigned int>(m_browser->maxHeight());
     tFileInfo.numpages = static_cast<unsigned int>(m_browser->allPages());
+    qCDebug(appLog) << "docBasicInfo end";
 }
 
 void DocSheet::onBrowserPageChanged(int page)
 {
+    qCDebug(appLog) << "onBrowserPageChanged";
     if (m_operation.currentPage != page) {
         m_operation.currentPage = page;
         if (m_sidebar)
@@ -1075,42 +1211,50 @@ void DocSheet::onBrowserPageChanged(int page)
 
 void DocSheet::onBrowserPageFirst()
 {
+    qCDebug(appLog) << "onBrowserPageFirst";
     jumpToFirstPage();
 }
 
 void DocSheet::onBrowserPagePrev()
 {
+    qCDebug(appLog) << "onBrowserPagePrev";
     jumpToPrevPage();
 }
 
 void DocSheet::onBrowserPageNext()
 {
+    qCDebug(appLog) << "onBrowserPageNext";
     jumpToNextPage();
 }
 
 void DocSheet::onBrowserPageLast()
 {
+    qCDebug(appLog) << "onBrowserPageLast";
     jumpToLastPage();
 }
 
 void DocSheet::onBrowserBookmark(int index, bool state)
 {
+    qCDebug(appLog) << "onBrowserBookmark";
     setBookMark(index, state);
 }
 
 void DocSheet::onBrowserOperaAnnotation(int type, int index, deepin_reader::Annotation *anno)
 {
+    qCDebug(appLog) << "onBrowserOperaAnnotation";
     m_sidebar->handleAnntationMsg(type, index, anno);
     setDocumentChanged(true);
 }
 
 void DocSheet::prepareSearch()
 {
+    qCDebug(appLog) << "prepareSearch";
     m_browser->handlePrepareSearch();
 }
 
 void DocSheet::startSearch(const QString &strFind)
 {
+    qCDebug(appLog) << "startSearch";
     m_browser->handleSearchStart();
     m_sidebar->handleSearchStart(strFind);
     m_searchTask->startSearch(this, strFind);
@@ -1119,18 +1263,21 @@ void DocSheet::startSearch(const QString &strFind)
 
 void DocSheet::jumpToNextSearchResult()
 {
+    qCDebug(appLog) << "jumpToNextSearchResult";
     //m_sidebar->jumpToNextSearchResult();  //左侧应该同时跳转，目前无此需求
     m_browser->jumpToNextSearchResult();
 }
 
 void DocSheet::jumpToPrevSearchResult()
 {
+    qCDebug(appLog) << "jumpToPrevSearchResult";
     //m_sidebar->jumpToPrevSearchResult();  //左侧应该同时跳转，目前无此需求
     m_browser->jumpToPrevSearchResult();
 }
 
 void DocSheet::stopSearch()
 {
+    qCDebug(appLog) << "stopSearch";
     m_searchTask->stopSearch();
     m_browser->handleSearchStop();
     m_sidebar->handleSearchStop();
@@ -1139,18 +1286,21 @@ void DocSheet::stopSearch()
 
 void DocSheet::onSearchResultComming(const deepin_reader::SearchResult &res)
 {
+    qCDebug(appLog) << "onSearchResultComming";
     m_browser->handleSearchResultComming(res);
     m_sidebar->handleSearchResultComming(res);
 }
 
 void DocSheet::onSearchFinished()
 {
+    qCDebug(appLog) << "onSearchFinished";
     int count = m_sidebar->handleFindFinished();
     m_browser->handleFindFinished(count);
 }
 
 void DocSheet::onSearchResultNotEmpty()
 {
+    qCDebug(appLog) << "onSearchResultNotEmpty";
     if (nullptr != m_browser) {
         m_browser->setIsSearchResultNotEmpty(true);
     }
@@ -1158,18 +1308,22 @@ void DocSheet::onSearchResultNotEmpty()
 
 void DocSheet::resizeEvent(QResizeEvent *event)
 {
+    // qCDebug(appLog) << "resizeEvent";
     DSplitter::resizeEvent(event);
     if (m_encryPage) {
+        // qCDebug(appLog) << "resizeEvent m_encryPage";
         m_encryPage->setGeometry(0, 0, this->width(), this->height());
     }
 
     if (isFullScreen()) {
+        // qCDebug(appLog) << "resizeEvent isFullScreen";
         m_sidebar->resize(m_sidebar->width(), this->height());
     }
 }
 
 void DocSheet::childEvent(QChildEvent *event)
 {
+    // qCDebug(appLog) << "childEvent";
     if (event->removed()) {
         return DSplitter::childEvent(event);
     }
@@ -1177,11 +1331,13 @@ void DocSheet::childEvent(QChildEvent *event)
 
 SheetBrowser *DocSheet::getSheetBrowser() const
 {
+    // qCDebug(appLog) << "getSheetBrowser";
     return m_browser;
 }
 
 void DocSheet::setAlive(bool alive)
 {
+    qCDebug(appLog) << "setAlive";
     if (alive) {
         if (!m_uuid.isEmpty())
             setAlive(false);
@@ -1197,16 +1353,17 @@ void DocSheet::setAlive(bool alive)
         g_lock.unlock();
 
         if (Database::instance()->readOperation(this)) {
-            qInfo() << "read from database config";
+            qCInfo(appLog) << "read from database config";
         } else if (readLastFileOperation()) {
-            qInfo() << "read from last operation file config";
+            qCInfo(appLog) << "read from last operation file config";
         } else {
-            qInfo() << "read from default config";
+            qCInfo(appLog) << "read from default config";
         }
 
         Database::instance()->readBookmarks(m_filePath, m_bookmarks);
 
     } else {
+        qCDebug(appLog) << "setAlive alive";
         if (m_uuid.isEmpty())
             return;
 
@@ -1226,10 +1383,12 @@ void DocSheet::setAlive(bool alive)
 
         g_lock.unlock();
     }
+    qCDebug(appLog) << "setAlive end";
 }
 
 bool DocSheet::readLastFileOperation()
 {
+    qCDebug(appLog) << "readLastFileOperation";
     QString filePath = DocSheet::g_lastOperationFile;
     if (filePath.isEmpty())
         return false;
@@ -1244,14 +1403,16 @@ bool DocSheet::readLastFileOperation()
         return false;
     }
 
-    qInfo() << __LINE__ << "read config from last operation file: " << filePath;
+    qCInfo(appLog) << __LINE__ << "read config from last operation file: " << filePath;
     m_operation = sheet->operationRef();
     return true;
 }
 
 void DocSheet::showEncryPage()
 {
+    qCDebug(appLog) << "showEncryPage";
     if (m_encryPage == nullptr) {
+        qCDebug(appLog) << "showEncryPage m_encryPage == nullptr";
         m_encryPage = new EncryptionPage(this);
         connect(m_encryPage, &EncryptionPage::sigExtractPassword, this, &DocSheet::onExtractPassword);
         this->stackUnder(m_encryPage);
@@ -1262,25 +1423,30 @@ void DocSheet::showEncryPage()
     m_encryPage->setGeometry(0, 0, this->width(), this->height());
     m_encryPage->raise();
     m_encryPage->show();
+    qCDebug(appLog) << "showEncryPage end";
 }
 
 bool DocSheet::opened()
 {
+    // qCDebug(appLog) << "opened";
     return m_renderer->opened();
 }
 
 int DocSheet::getIndexByPageLable(const QString &pageLable)
 {
+    // qCDebug(appLog) << "getIndexByPageLable";
     return m_renderer->pageLableIndex(pageLable);
 }
 
 QString DocSheet::getPageLabelByIndex(const int &index)
 {
+    // qCDebug(appLog) << "getPageLabelByIndex";
     return m_renderer->pageNum2Lable(index);
 }
 
 void DocSheet::onExtractPassword(const QString &password)
 {
+    qCDebug(appLog) << "Extracted password, attempting to open file";
     m_password = password;
 
     m_renderer->openFileAsync(m_password);
@@ -1288,13 +1454,17 @@ void DocSheet::onExtractPassword(const QString &password)
 
 SheetRenderer *DocSheet::renderer()
 {
+    // qCDebug(appLog) << "renderer";
     return m_renderer;
 }
 
 void DocSheet::onPopPrintDialog()
 {
-    if (!this->opened())
+    qCDebug(appLog) << "Preparing print dialog";
+    if (!this->opened()) {
+        qCWarning(appLog) << "Cannot print - document not opened";
         return;
+    }
 
     DPrintPreviewDialog *preview = new DPrintPreviewDialog(this);
     preview->setAttribute(Qt::WA_DeleteOnClose);
@@ -1317,11 +1487,11 @@ void DocSheet::onPopPrintDialog()
                                                 m_password, nullptr, error);
 
         QString pdfPath = filePath();
-        qInfo()  << pdfPath << "isLinearized:" << document->properties().value("Linearized").toBool();
+        qCInfo(appLog)  << pdfPath << "isLinearized:" << document->properties().value("Linearized").toBool();
         if (document->properties().value("Linearized").toBool()) {
             pdfPath = QTemporaryDir("LinearizedConverted.pdf").path();
             if (!m_renderer->saveAs(pdfPath)) {
-                qInfo() << "saveAs failed when print Linearized pdf";
+                qCInfo(appLog) << "saveAs failed when print Linearized pdf";
                 return;
             }
         }
@@ -1333,10 +1503,12 @@ void DocSheet::onPopPrintDialog()
     connect(preview, QOverload<DPrinter *>::of(&DPrintPreviewDialog::paintRequested), this, QOverload<DPrinter *>::of(&DocSheet::onPrintRequested));
 #endif
     preview->open();
+    qCDebug(appLog) << "onPopPrintDialog end";
 }
 
 void DocSheet::onPopInfoDialog()
 {
+    qCDebug(appLog) << "onPopInfoDialog";
     FileAttrWidget pFileAttrWidget(this);
     pFileAttrWidget.setFileAttr(this);
     pFileAttrWidget.exec();
@@ -1344,22 +1516,26 @@ void DocSheet::onPopInfoDialog()
 
 QSizeF DocSheet::pageSizeByIndex(int index)
 {
+    // qCDebug(appLog) << "pageSizeByIndex";
     return m_renderer->getPageSize(index);
 }
 
 void DocSheet::resetChildParent()
 {
+    qCDebug(appLog) << "resetChildParent";
     m_sidebar->setParent(nullptr);
     m_sidebar->setParent(this);
 
     m_browser->setParent(nullptr);
     m_browser->setParent(this);
+    qCDebug(appLog) << "resetChildParent end";
 }
 
 DocSheet::LoadingWidget::LoadingWidget(QWidget *parent)
     : QWidget(parent)
     , m_parentWidget(parent)
 {
+    qCDebug(appLog) << "LoadingWidget";
     Q_ASSERT(m_parentWidget);
     setGeometry(0, 0, m_parentWidget->width(), m_parentWidget->height());
 
@@ -1371,15 +1547,18 @@ DocSheet::LoadingWidget::LoadingWidget(QWidget *parent)
     m_parentWidget->setEnabled(false);
 
     raise();
+    qCDebug(appLog) << "LoadingWidget end";
 }
 
 DocSheet::LoadingWidget::~LoadingWidget()
 {
+    // qCDebug(appLog) << "LoadingWidget::~LoadingWidget";
     m_parentWidget->setEnabled(true);
 }
 
 QImage DocSheet::LoadingWidget::getImage(DocSheet *doc, int index, int width, int height)
 {
+    qCDebug(appLog) << "getImage";
     QImage image;
     QEventLoop loop;
     QThread *thread = QThread::create([ =, &image]() {
@@ -1392,11 +1571,13 @@ QImage DocSheet::LoadingWidget::getImage(DocSheet *doc, int index, int width, in
 
     loop.exec(QEventLoop::ExcludeSocketNotifiers);
 
+    qCDebug(appLog) << "getImage end";
     return image;
 }
 
 void DocSheet::LoadingWidget::paintEvent(QPaintEvent *)
 {
+    // qCDebug(appLog) << "paintEvent";
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 
@@ -1414,4 +1595,5 @@ void DocSheet::LoadingWidget::paintEvent(QPaintEvent *)
     painter.setBrush(bg);
     painter.setPen(QPen(QColor(0, 0, 0, int(255 * 0.05)), 1));
     painter.drawPath(path);
+    // qCDebug(appLog) << "paintEvent end";
 }

@@ -11,6 +11,7 @@
 #include "MainWindow.h"
 #include "ShortCutShow.h"
 #include "DBusObject.h"
+#include "ddlog.h"
 
 #include <DMessageManager>
 #include <DFileDialog>
@@ -24,6 +25,7 @@
 Central::Central(QWidget *parent)
     : BaseWidget(parent)
 {
+    qCDebug(appLog) << "Central widget initializing...";
     setAcceptDrops(true);
 
     m_widget = new TitleWidget(parent);
@@ -86,16 +88,20 @@ Central::Central(QWidget *parent)
 
 Central::~Central()
 {
+    // qCDebug(appLog) << "Central widget destroying...";
 }
 
 TitleWidget *Central::titleWidget()
 {
+    // qCDebug(appLog) << "Getting title widget";
     return m_widget;
 }
 
 CentralDocPage *Central::docPage()
 {
+    // qCDebug(appLog) << "Getting doc page";
     if (nullptr == m_docPage) {
+        // qCDebug(appLog) << "Creating doc page";
         m_docPage = new CentralDocPage(this);
         m_layout->addWidget(m_docPage);
         connect(m_docPage, SIGNAL(sigCurSheetChanged(DocSheet *)), m_menu, SLOT(onCurSheetChanged(DocSheet *)));
@@ -107,30 +113,38 @@ CentralDocPage *Central::docPage()
         connect(m_docPage, SIGNAL(sigNeedOpenFilesExec()), SLOT(onOpenFilesExec()));
         connect(m_docPage, SIGNAL(sigNeedActivateWindow()), this, SLOT(onNeedActivateWindow()));
     }
-
+    // qCDebug(appLog) << "Getting doc page end";
     return m_docPage;
 }
 
 void Central::setMenu(TitleMenu *menu)
 {
+    // qCDebug(appLog) << "Setting menu";
     m_menu = menu;
     connect(m_menu, SIGNAL(sigActionTriggered(QString)), this, SLOT(onMenuTriggered(QString)));
 }
 
 void Central::addFilesWithDialog()
 {
+    qCDebug(appLog) << "Opening file selection dialog...";
     DFileDialog dialog(this);
     dialog.setFileMode(DFileDialog::ExistingFiles);
+#ifdef XPS_SUPPORT_ENABLED
+    dialog.setNameFilter(tr("Documents") + " (*.pdf *.djvu *.docx *.xps)");
+#else
     dialog.setNameFilter(tr("Documents") + " (*.pdf *.djvu *.docx)");
+#endif
     dialog.setDirectory(QDir::homePath());
 
     if (QDialog::Accepted != dialog.exec()) {
+        qCDebug(appLog) << "File selection dialog canceled";
         return;
     }
 
     QStringList filePathList = dialog.selectedFiles();
 
     if (filePathList.count() <= 0) {
+        qCWarning(appLog) << "No files selected in dialog";
         return;
     }
 
@@ -148,26 +162,31 @@ void Central::addFilesWithDialog()
 
 void Central::addFileAsync(const QString &filePath)
 {
+    qCDebug(appLog) << "Adding file asynchronously:" << filePath;
     docPage()->addFileAsync(filePath);
 }
 
 void Central::addSheet(DocSheet *sheet)
 {
+    qCDebug(appLog) << "Adding sheet:" << sheet;
     docPage()->addSheet(sheet);
 }
 
 bool Central::hasSheet(DocSheet *sheet)
 {
+    qCDebug(appLog) << "Checking if sheet exists:" << sheet;
     return docPage()->hasSheet(sheet);
 }
 
 void Central::showSheet(DocSheet *sheet)
 {
+    qCDebug(appLog) << "Showing sheet:" << sheet;
     docPage()->showSheet(sheet);
 }
 
 QList<DocSheet *> Central::getSheets()
 {
+    // qCDebug(appLog) << "Getting sheets";
     if (nullptr == m_docPage)
         return QList<DocSheet *>();
 
@@ -176,32 +195,41 @@ QList<DocSheet *> Central::getSheets()
 
 void Central::handleShortcut(const QString &shortcut)
 {
+    qCDebug(appLog) << "Handling shortcut:" << shortcut;
     if (shortcut == Dr::key_ctrl_o) {
+        qCDebug(appLog) << "Handling Ctrl+O shortcut - opening file dialog";
         addFilesWithDialog();
     } if (shortcut == Dr::key_ctrl_shift_slash) { //  显示快捷键预览
+        qCDebug(appLog) << "Showing shortcut preview";
         ShortCutShow show;
         show.setSheet(docPage()->getCurSheet());
         show.show();
     } else {
+        qCDebug(appLog) << "Handling shortcut:" << shortcut;
         docPage()->handleShortcut(shortcut);
     }
 }
 
 bool Central::handleClose(bool needToBeSaved)
 {
+    qCDebug(appLog) << "Handling close:" << needToBeSaved;
     if (nullptr != m_docPage) {
-        qDebug() << __FUNCTION__ << "正在关闭所有 sheet ...";
+        qCDebug(appLog) << __FUNCTION__ << "正在关闭所有 sheet ...";
         return docPage()->closeAllSheets(needToBeSaved);
     }
+    qCWarning(appLog) << "No document page available to close";
 
     return true;
 }
 
 void Central::onSheetCountChanged(int count)
 {
+    qCDebug(appLog) << "Sheet count changed:" << count;
     if (count > 0) {
+        qCDebug(appLog) << "Setting current index to 1";
         m_layout->setCurrentIndex(1);
     } else {
+        qCDebug(appLog) << "Setting current index to 0";
         m_layout->setCurrentIndex(0);
         m_navPage->setFocus();
         m_widget->setControlEnabled(false);
@@ -210,50 +238,65 @@ void Central::onSheetCountChanged(int count)
 
 void Central::onMenuTriggered(const QString &action)
 {
+    qCDebug(appLog) << "Menu triggered:" << action;
     if (action == "New window") {
+        qCDebug(appLog) << "Allowing create window";
         if (MainWindow::allowCreateWindow())
             MainWindow::createWindow()->show();
     } else if (action == "New tab") {
+        qCDebug(appLog) << "Adding files with dialog";
         addFilesWithDialog();
     } else if (action == "Save") { //  保存当前显示文件
+        qCDebug(appLog) << "Saving current";
         docPage()->saveCurrent();
         docPage()->handleBlockShutdown();
     } else if (action == "Save as") {
+        qCDebug(appLog) << "Saving as current";
         docPage()->saveAsCurrent();
     } else if (action == "Magnifer") {   //  开启放大镜
+        qCDebug(appLog) << "Opening magnifer";
         docPage()->openMagnifer();
     } else if (action == "Display in file manager") {    //  文件浏览器 显示
+        qCDebug(appLog) << "Opening current file folder";
         docPage()->openCurFileFolder();
     } else if (action == "Search") {
+        qCDebug(appLog) << "Preparing search";
         docPage()->prepareSearch();
     } else if (action == "Print") {
+        qCDebug(appLog) << "Popping print dialog";
         docPage()->getCurSheet()->onPopPrintDialog();
     }
 }
 
 void Central::onOpenFilesExec()
 {
+    qCDebug(appLog) << "Executing open files request";
     addFilesWithDialog();
 }
 
 void Central::onNeedActivateWindow()
 {
+    qCDebug(appLog) << "Activating window";
     activateWindow();
 }
 
 void Central::onShowTips(QWidget *parent, const QString &text, int iconIndex)
 {
+    qCDebug(appLog) << "Showing tips:" << text << "icon index:" << iconIndex;
     if (m_layout->currentIndex() == 0) {
+        qCDebug(appLog) << "Showing tips in nav page";
         if (0 == iconIndex)
             DMessageManager::instance()->sendMessage(m_navPage, QIcon::fromTheme(QString("dr_") + "ok"), text);
         else
             DMessageManager::instance()->sendMessage(m_navPage, QIcon::fromTheme(QString("dr_") + "warning"), text);
     } else if (parent != nullptr) {
+        qCDebug(appLog) << "Showing tips in parent";
         if (0 == iconIndex)
             DMessageManager::instance()->sendMessage(parent, QIcon::fromTheme(QString("dr_") + "ok"), text);
         else
             DMessageManager::instance()->sendMessage(parent, QIcon::fromTheme(QString("dr_") + "warning"), text);
     } else {
+        qCDebug(appLog) << "Showing tips in central";
         if (0 == iconIndex)
             DMessageManager::instance()->sendMessage(this, QIcon::fromTheme(QString("dr_") + "ok"), text);
         else
@@ -263,17 +306,21 @@ void Central::onShowTips(QWidget *parent, const QString &text, int iconIndex)
 
 void Central::onTouchPadEvent(const QString &name, const QString &direction, int fingers)
 {
+    // qCDebug(appLog) << "Touch pad event:" << name << "direction:" << direction << "fingers:" << fingers;
     // 当前窗口被激活,且有焦点
     if (this->isActiveWindow()) {
+        // qCDebug(appLog) << "Touch pad event is active window";
         if ("pinch" == name && 2 == fingers) {
             if ("in" == direction) {
                 // 捏合 in是手指捏合的方向 向内缩小
                 if (m_docPage) {
+                    // qCDebug(appLog) << "Zooming out";
                     m_docPage->zoomOut();
                 }
             } else if ("out" == direction) {
                 // 捏合 out是手指捏合的方向 向外放大
                 if (m_docPage) {
+                    // qCDebug(appLog) << "Zooming in";
                     m_docPage->zoomIn();
                 }
             }
@@ -283,30 +330,41 @@ void Central::onTouchPadEvent(const QString &name, const QString &direction, int
 
 void Central::onKeyTriggered()
 {
+    qCDebug(appLog) << "Key triggered";
     QAction *action = static_cast<QAction *>(sender());
-    if (nullptr == action)
+    if (nullptr == action) {
+        qCWarning(appLog) << "Received key trigger from null action";
         return;
+    }
 
     handleShortcut(action->shortcut().toString());
 }
 
 void Central::dragEnterEvent(QDragEnterEvent *event)
 {
+    // qCDebug(appLog) << "Central::dragEnterEvent start";
     auto mimeData = event->mimeData();
     if (mimeData->hasUrls()) {
+        // qCDebug(appLog) << "URLs detected in drag event";
         event->accept();
         activateWindow();
     } else if (mimeData->hasFormat("reader/tabbar")) {
+        // qCDebug(appLog) << "Tabbar format detected in drag event";
         event->accept();
         activateWindow();
-    } else
+    } else {
+        // qCDebug(appLog) << "Unknown format in drag event, ignoring";
         event->ignore();
+    }
+    // qCDebug(appLog) << "Central::dragEnterEvent end";
 }
 
 void Central::dropEvent(QDropEvent *event)
 {
+    // qCDebug(appLog) << "Central::dropEvent start";
     auto mimeData = event->mimeData();
     if (mimeData->hasFormat("deepin_reader/tabbar")) {
+        // qCDebug(appLog) << "Tabbar format detected in drop event";
         event->setDropAction(Qt::MoveAction);
 
         event->accept();
@@ -321,6 +379,7 @@ void Central::dropEvent(QDropEvent *event)
             docPage()->onCentralMoveIn(sheet);
 
     } else if (mimeData->hasUrls()) {
+        // qCDebug(appLog) << "URLs format detected in drop event";
         QWidget *topLevelwidget = topLevelWidget();
 
         topLevelwidget->setProperty("loading", true);
@@ -331,7 +390,7 @@ void Central::dropEvent(QDropEvent *event)
 
             QString filePath = url.toLocalFile();
 
-            qInfo() << "拖动打开文档:" <<  filePath;
+            qCInfo(appLog) << "拖动打开文档:" <<  filePath;
             if (!MainWindow::activateSheetIfExist(filePath)) {
                 docPage()->addFileAsync(filePath);
             }
@@ -339,11 +398,14 @@ void Central::dropEvent(QDropEvent *event)
 
         topLevelwidget->setProperty("loading", false);
     }
+    // qCDebug(appLog) << "Central::dropEvent end";
 }
 
 void Central::resizeEvent(QResizeEvent *event)
 {
+    // qCDebug(appLog) << "Central::resizeEvent start - size:" << event->size();
     m_mainWidget->move(0, 0);
     m_mainWidget->resize(event->size());
     BaseWidget::resizeEvent(event);
+    // qCDebug(appLog) << "Central::resizeEvent end";
 }

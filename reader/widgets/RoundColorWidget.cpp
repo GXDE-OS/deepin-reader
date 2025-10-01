@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "RoundColorWidget.h"
+#include "ddlog.h"
+#include <QDebug>
 
 #include <DStyle>
 
@@ -19,10 +21,12 @@ RoundColorWidget::RoundColorWidget(const QColor &color, QWidget *parent)
     , m_isSelected(false)
     , m_color(color)
 {
+    qCDebug(appLog) << "RoundColorWidget created, color:" << color.name() << ", parent:" << parent;
 }
 
 void RoundColorWidget::setSelected(bool selected)
 {
+    qCDebug(appLog) << "RoundColorWidget selection changed from" << m_isSelected << "to" << selected;
     if (m_isSelected == selected)
         return;
 
@@ -33,7 +37,9 @@ void RoundColorWidget::setSelected(bool selected)
 
 void RoundColorWidget::mousePressEvent(QMouseEvent *event)
 {
+    // qCDebug(appLog) << "RoundColorWidget mousePressEvent";
     if (event->button() == Qt::LeftButton) {
+        // qCDebug(appLog) << "RoundColorWidget clicked, selected:" << m_isSelected << ", allNotify:" << m_allnotify;
         if (m_isSelected && !m_allnotify) return;
         Q_EMIT clicked();
     }
@@ -41,6 +47,7 @@ void RoundColorWidget::mousePressEvent(QMouseEvent *event)
 
 void RoundColorWidget::paintEvent(QPaintEvent *event)
 {
+    // qCDebug(appLog) << "RoundColorWidget paintEvent";
     Q_UNUSED(event)
     QPainter painter(this);
     painter.setPen(Qt::NoPen);
@@ -50,6 +57,7 @@ void RoundColorWidget::paintEvent(QPaintEvent *event)
 
     QRect squareRect = rect();
     if (m_isSelected) {
+        // qCDebug(appLog) << "RoundColorWidget paintEvent m_isSelected";
         //draw select circle
         QPen pen;
         pen.setBrush(QBrush(m_color));
@@ -64,4 +72,5 @@ void RoundColorWidget::paintEvent(QPaintEvent *event)
     path.addEllipse(r);
     painter.setClipPath(path);
     painter.fillPath(path, QBrush(m_color));
+    // qCDebug(appLog) << "RoundColorWidget paintEvent end";
 }

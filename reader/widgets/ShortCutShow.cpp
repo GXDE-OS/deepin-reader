@@ -7,6 +7,8 @@
 #include "Application.h"
 #include "Global.h"
 #include "DocSheet.h"
+#include "ddlog.h"
+#include <QDebug>
 
 #include <DGuiApplicationHelper>
 
@@ -19,11 +21,12 @@
 ShortCutShow::ShortCutShow(QObject *parent)
     : QObject(parent)
 {
-
+    qCDebug(appLog) << "ShortCutShow created, parent:" << parent;
 }
 
 void ShortCutShow::setSheet(DocSheet *sheet)
 {
+    qCDebug(appLog) << "Setting sheet type:" << (sheet ? sheet->fileType() : -1);
     if (nullptr == sheet)
         initPDF();
     else if (Dr::DJVU == sheet->fileType())
@@ -34,6 +37,7 @@ void ShortCutShow::setSheet(DocSheet *sheet)
 
 void ShortCutShow::show()
 {
+    qCDebug(appLog) << "Showing shortcut viewer with" << m_shortcutMap.size() << "shortcut groups";
     QRect rect = QGuiApplication::primaryScreen()->geometry();
     QPoint pos(rect.x() + rect.width() / 2, rect.y() + rect.height() / 2);
 #if (DTK_VERSION >= DTK_VERSION_CHECK(5, 5, 2, 0))
@@ -87,6 +91,7 @@ void ShortCutShow::show()
 
 void ShortCutShow::initDJVU()
 {
+    qCDebug(appLog) << "Initializing DJVU shortcuts";
     initPDF();
     //remove Dr::key_ctrl_f
     m_shortcutMap[ShortCutType::Tools].removeKey(Dr::key_ctrl_f);
@@ -94,6 +99,7 @@ void ShortCutShow::initDJVU()
 
 void ShortCutShow::initPDF()
 {
+    qCDebug(appLog) << "Initializing PDF shortcuts";
     m_shortcutMap = {
         //Settings
         {ShortCutType::Settings, {

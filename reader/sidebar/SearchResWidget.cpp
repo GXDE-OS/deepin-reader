@@ -9,28 +9,31 @@
 #include "SideBarImageViewModel.h"
 #include "SearchResDelegate.h"
 #include "Model.h"
+#include "ddlog.h"
 
 #include <DLabel>
+#include <QDebug>
 
 #include <QStackedLayout>
 
 const int SEARCH_INDEX = 0;
 const int TIPS_INDEX = 1;
 const int LEFTMINHEIGHT = 80;
-
 SearchResWidget::SearchResWidget(DocSheet *sheet, DWidget *parent)
     : BaseWidget(parent), m_sheet(sheet)
 {
+    qCDebug(appLog) << "SearchResWidget created for document:" << (sheet ? sheet->filePath() : "null");
     initWidget();
 }
 
 SearchResWidget::~SearchResWidget()
 {
-
+    qCDebug(appLog) << "SearchResWidget destroyed";
 }
 
 void SearchResWidget::initWidget()
 {
+    qCDebug(appLog) << "Initializing SearchResWidget UI";
     m_stackLayout = new QStackedLayout;
     m_stackLayout->setContentsMargins(0, 8, 0, 0);
     m_stackLayout->setSpacing(0);
@@ -54,6 +57,7 @@ void SearchResWidget::initWidget()
 
 void SearchResWidget::handleSearchResultComming(const deepin_reader::SearchResult &search)
 {
+    qCDebug(appLog) << "Processing search result for page:" << search.page;
     QString strText;
     for (const auto &section : search.sections) {
         for (const auto &line : section) {
@@ -67,29 +71,39 @@ void SearchResWidget::handleSearchResultComming(const deepin_reader::SearchResul
 int  SearchResWidget::handleFindFinished()
 {
     int searchCount = m_pImageListView->model()->rowCount();
-    if (searchCount <= 0)
+    qCDebug(appLog) << "Search finished, found" << searchCount << "results";
+    if (searchCount <= 0) {
+        qCDebug(appLog) << "Showing no results tip";
         m_stackLayout->setCurrentIndex(TIPS_INDEX);
-    else
+    } else {
+        qCDebug(appLog) << "Showing search results";
         m_stackLayout->setCurrentIndex(SEARCH_INDEX);
+    }
     return searchCount;
 }
 
 void SearchResWidget::clearFindResult()
 {
+    qCDebug(appLog) << "SearchResWidget::clearFindResult start";
     m_searchKey.clear();
     m_stackLayout->setCurrentIndex(SEARCH_INDEX);
     m_pImageListView->getImageModel()->resetData();
+    qCDebug(appLog) << "SearchResWidget::clearFindResult end";
 }
 
 void SearchResWidget::searchKey(const QString &searchKey)
 {
+    qCDebug(appLog) << "Setting search key:" << searchKey;
     m_searchKey = searchKey;
 }
 
 void SearchResWidget::addSearchsItem(const int &pageIndex, const QString &text, const int &resultNum)
 {
-    if (nullptr == m_sheet && !text.contains(m_searchKey))
+    qCDebug(appLog) << "SearchResWidget::addSearchsItem start";
+    if (nullptr == m_sheet && !text.contains(m_searchKey)) {
+        qCDebug(appLog) << "Invalid sheet or text does not contain search key";
         return;
+    }
 
     ImagePageInfo_t tImagePageInfo;
     tImagePageInfo.pageIndex = pageIndex;
@@ -97,12 +111,16 @@ void SearchResWidget::addSearchsItem(const int &pageIndex, const QString &text, 
     tImagePageInfo.strSearchcount = tr("%1 items found").arg(resultNum);
     m_pImageListView->getImageModel()->insertPageIndex(tImagePageInfo);
 
-    if (m_stackLayout->currentIndex() != SEARCH_INDEX)
+    if (m_stackLayout->currentIndex() != SEARCH_INDEX) {
+        qCDebug(appLog) << "Setting current index to SEARCH_INDEX";
         m_stackLayout->setCurrentIndex(SEARCH_INDEX);
+    }
+    qCDebug(appLog) << "SearchResWidget::addSearchsItem end";
 }
 
 void SearchResWidget::adaptWindowSize(const double &scale)
 {
+    qCDebug(appLog) << "Adapting window size with scale:" << scale;
     const QModelIndex &curModelIndex = m_pImageListView->currentIndex();
     m_pImageListView->setProperty("adaptScale", scale);
     m_pImageListView->setItemSize(QSize(static_cast<int>(LEFTMINWIDTH * scale), LEFTMINHEIGHT));

@@ -5,6 +5,7 @@
 
 #include "Utils.h"
 #include "Application.h"
+#include "ddlog.h"
 
 #include <QMimeDatabase>
 #include <QPainter>
@@ -30,9 +31,11 @@ int Utils::m_colorIndex = 0;
 QString Utils::m_currenFilePath = "";
 QString Utils::getKeyshortcut(QKeyEvent *keyEvent)
 {
+    // qCDebug(appLog) << "Processing keyboard shortcut";
     QStringList keys;
     Qt::KeyboardModifiers modifiers = keyEvent->modifiers();
     if (modifiers != Qt::NoModifier) {
+        // qCDebug(appLog) << "Utils::getKeyshortcut() - Processing modifiers";
         if (modifiers.testFlag(Qt::ControlModifier)) {
             keys.append("Ctrl");
         }
@@ -51,32 +54,42 @@ QString Utils::getKeyshortcut(QKeyEvent *keyEvent)
     }
 
     if (keyEvent->key() != 0 && keyEvent->key() != Qt::Key_unknown) {
+        // qCDebug(appLog) << "Utils::getKeyshortcut() - Adding key:" << keyEvent->key();
         keys.append(QKeySequence(keyEvent->key()).toString());
     }
 
-    return keys.join("+");
+    QString result = keys.join("+");
+    // qCDebug(appLog) << "Utils::getKeyshortcut() - Generated shortcut:" << result;
+    return result;
 }
 
 QString Utils::getInputDataSize(const qint64 &dSize)
 {
+    qCDebug(appLog) << "Formatting data size:" << dSize;
     if (dSize < 1024) {
+        qCDebug(appLog) << "Utils::getInputDataSize() - Size in bytes";
         return QString("%1 B").arg(dSize);
     }
     if (dSize < 1024 * 1024) {
+        qCDebug(appLog) << "Utils::getInputDataSize() - Size in KB";
         double d = dSize / 1024.0;
         return QString::number(d, 'f', 1) + " KB";
     }
     if (dSize < 1024 * 1024 * 1024) {
+        qCDebug(appLog) << "Utils::getInputDataSize() - Size in MB";
         double d = dSize / 1024.0 / 1024.0;
         return QString::number(d, 'f', 1) + " MB";
     }
+    qCDebug(appLog) << "Utils::getInputDataSize() - Size in GB";
     double d = dSize / 1024.0 / 1024.0 / 1024.0;
     return QString::number(d, 'f', 1) + " GB";
 }
 
 QPixmap Utils::roundQPixmap(const QPixmap &img_in, int radius)
 {
+    qCDebug(appLog) << "Utils::roundQPixmap() - Starting pixmap rounding with radius:" << radius;
     if (img_in.isNull()) {
+        qCDebug(appLog) << "Utils::roundQPixmap() - Input pixmap is null, returning empty pixmap";
         return QPixmap();
     }
     const QSize &imgSize = img_in.size();
@@ -89,56 +102,73 @@ QPixmap Utils::roundQPixmap(const QPixmap &img_in, int radius)
     clippath.addRoundedRect(0, 0, imgSize.width() / dApp->devicePixelRatio(), imgSize.height() / dApp->devicePixelRatio(), radius, radius);
     painter.setClipPath(clippath);
     painter.drawPixmap(0, 0, img_in);
+    qCDebug(appLog) << "Utils::roundQPixmap() - Pixmap rounding completed";
     return pixmap;
 }
 
 void  Utils::copyText(const QString &sText)
 {
+    qCDebug(appLog) << "Copying text to clipboard";
 #if _ZPD_
+    qCDebug(appLog) << "Utils::copyText() - Checking ZPD intercept";
     int intercept = 0;
     if (getLoadLibsInstance()->m_document_clip_copy) {
-        qInfo() << "当前文档: *** "/* <<m_currenFilePath*/;
+        qCInfo(appLog) << "当前文档: *** "/* <<m_currenFilePath*/;
         getLoadLibsInstance()->m_document_clip_copy(m_currenFilePath.toLocal8Bit().data(), &intercept);
-        qInfo() << "是否拦截不允许复制(1:拦截 0:不拦截): " << intercept;
+        qCInfo(appLog) << "是否拦截不允许复制(1:拦截 0:不拦截): " << intercept;
     }
-    if (intercept > 0)
+    if (intercept > 0) {
+        qCDebug(appLog) << "Utils::copyText() - Copy intercepted by ZPD, returning";
         return;
+    }
 #endif
     QClipboard *clipboard = DApplication::clipboard();
     QString sOldText = clipboard->text(QClipboard::Clipboard);
     if (sOldText != sText) {
+        qCDebug(appLog) << "Utils::copyText() - Setting new text to clipboard";
         clipboard->setText(sText);
     }
+    qCDebug(appLog) << "Utils::copyText() - Text copy operation completed";
 }
 
 QString Utils::getElidedText(const QFontMetrics &fontMetrics, const QSize &size, const QString &text, Qt::Alignment alignment)
 {
+    qCDebug(appLog) << "Utils::getElidedText() - Starting text eliding";
     int textLength = text.length();
     QString tmptext;
     for (int index = 0; index < textLength; index++) {
         const QString &ltext = text.left(index + 1);
         if (fontMetrics.boundingRect(0, 0, size.width(), size.height(), static_cast<int>(alignment | Qt::TextWrapAnywhere), ltext + QString("...")).height() > size.height()) {
+            qCDebug(appLog) << "Utils::getElidedText() - Text exceeds height at index:" << index;
             break;
         }
         tmptext = ltext;
     }
-    if (tmptext.length() < textLength)
+    if (tmptext.length() < textLength) {
+        qCDebug(appLog) << "Utils::getElidedText() - Adding ellipsis";
         tmptext.append("...");
+    }
+    qCDebug(appLog) << "Utils::getElidedText() - Final elided text length:" << tmptext.length();
     return tmptext;
 }
 
 bool Utils::copyFile(const QString &sourcePath, const QString &destinationPath)
 {
-    if (sourcePath == destinationPath)
+    qCDebug(appLog) << "Copying file from:" << sourcePath << "to:" << destinationPath;
+    if (sourcePath == destinationPath) {
+        qCDebug(appLog) << "Source and destination paths are the same";
         return true;
+    }
 
     QFile sourceFile(sourcePath);
     if (!sourceFile.open(QIODevice::ReadOnly)) {
+        qCWarning(appLog) << "Failed to open source file for reading";
         return false;
     }
 
     QFile destinationFile(destinationPath);
     if (!destinationFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qCDebug(appLog) << "Utils::copyFile() - Failed to open destination file, closing source and returning false";
         sourceFile.close();
         return false;
     }
@@ -151,11 +181,13 @@ bool Utils::copyFile(const QString &sourcePath, const QString &destinationPath)
     int ret = true;
     do {
         if ((size = sourceFile.read(buffer.data(), maxSize)) < 0) {
+            qCDebug(appLog) << "Utils::copyFile() - Error reading from source file";
             ret = false;
             break;
         }
 
         if (destinationFile.write(buffer.data(), size) < 0) {
+            qCDebug(appLog) << "Utils::copyFile() - Error writing to destination file";
             ret = false;
             break;
         }
@@ -166,24 +198,31 @@ bool Utils::copyFile(const QString &sourcePath, const QString &destinationPath)
     destinationFile.flush();//函数将用户缓存中的内容写入内核缓冲区
     fsync(destinationFile.handle());//将内核缓冲写入文件(磁盘)
     destinationFile.close();
+    qCDebug(appLog) << "Utils::copyFile() - Destination file closed, copy operation result:" << ret;
     return ret;
 }
 
 QImage Utils::copyImage(const QImage &srcimg, int x, int y, int w, int h)
 {
+    qCDebug(appLog) << "Copying image region:" << QRect(x, y, w, h);
     int dx = 0;
     int dy = 0;
-    if (w <= 0 || h <= 0)
+    if (w <= 0 || h <= 0) {
+        qCDebug(appLog) << "Utils::copyImage() - Invalid dimensions, returning empty image";
         return QImage();
+    }
 
     QImage::Format format = srcimg.format();
     QImage image(w, h, format);
-    if (image.isNull())
+    if (image.isNull()) {
+        qCDebug(appLog) << "Utils::copyImage() - Failed to create destination image";
         return image;
+    }
 
     int srcw = srcimg.width();
     int srch = srcimg.height();
     if (x < 0 || y < 0 || x + w > srcw || y + h > srch) {
+        qCDebug(appLog) << "Utils::copyImage() - Region extends beyond source image, adjusting coordinates";
         // bitBlt will not cover entire image - clear it.
         image.fill(Qt::white);
         if (x < 0) {
@@ -214,6 +253,7 @@ QImage Utils::copyImage(const QImage &srcimg, int x, int y, int w, int h)
         byteAligned = !(dx & 7) && !(x & 7) && !(pixels_to_copy & 7);
 
     if (byteAligned) {
+        qCDebug(appLog) << "Utils::copyImage() - Using byte-aligned copy method";
         const uchar *src = srcimg.bits() + ((x * srcimg.depth()) >> 3) + y * srcimg.bytesPerLine();
         uchar *dest = image.bits() + ((dx * srcimg.depth()) >> 3) + dy * image.bytesPerLine();
         const int bytes_to_copy = (pixels_to_copy * srcimg.depth()) >> 3;
@@ -223,6 +263,7 @@ QImage Utils::copyImage(const QImage &srcimg, int x, int y, int w, int h)
             dest += image.bytesPerLine();
         }
     } else if (format == QImage::Format_Mono) {
+        qCDebug(appLog) << "Utils::copyImage() - Using Mono format copy method";
         const uchar *src = srcimg.bits() + y * srcimg.bytesPerLine();
         uchar *dest = image.bits() + dy * image.bytesPerLine();
         for (int i = 0; i < lines_to_copy; ++i) {
@@ -236,6 +277,7 @@ QImage Utils::copyImage(const QImage &srcimg, int x, int y, int w, int h)
             dest += image.bytesPerLine();
         }
     } else { // Format_MonoLSB
+        qCDebug(appLog) << "Utils::copyImage() - Using MonoLSB format copy method";
         Q_ASSERT(format == QImage::Format_MonoLSB);
         const uchar *src = srcimg.bits() + y * srcimg.bytesPerLine();
         uchar *dest = image.bits() + dy * image.bytesPerLine();
@@ -255,11 +297,13 @@ QImage Utils::copyImage(const QImage &srcimg, int x, int y, int w, int h)
     image.setDotsPerMeterY(srcimg.dotsPerMeterY());
     image.setDevicePixelRatio(srcimg.devicePixelRatio());
     image.setOffset(srcimg.offset());
+    qCDebug(appLog) << "Utils::copyImage() - Image copy operation completed";
     return image;
 }
 
 QList<QColor> Utils::getHiglightColorList()
 {
+    qCDebug(appLog) << "Utils::getHiglightColorList() - Getting highlight color list";
     QList<QColor> listColor;
     listColor.append(QColor("#FFA503"));
     listColor.append(QColor("#FF1C49"));
@@ -269,46 +313,62 @@ QList<QColor> Utils::getHiglightColorList()
     listColor.append(QColor("#05EA6B"));
     listColor.append(QColor("#FEF144"));
     listColor.append(QColor("#D5D5D1"));
+    qCDebug(appLog) << "Utils::getHiglightColorList() - Returning" << listColor.size() << "colors";
     return listColor;
 }
 
 void Utils::setHiglightColorIndex(int index)
 {
-    if (m_colorIndex < 0 || m_colorIndex >= getHiglightColorList().size())
+    // qCDebug(appLog) << "Utils::setHiglightColorIndex() - Setting color index to:" << index;
+    if (m_colorIndex < 0 || m_colorIndex >= getHiglightColorList().size()) {
+        // qCDebug(appLog) << "Utils::setHiglightColorIndex() - Invalid index, returning";
         return;
+    }
     m_colorIndex = index;
+    // qCDebug(appLog) << "Utils::setHiglightColorIndex() - Color index set successfully";
 }
 
 QColor Utils::getCurHiglightColor()
 {
+    // qCDebug(appLog) << "Utils::getCurHiglightColor() - Getting current highlight color";
     const QList<QColor> &colorlst =  getHiglightColorList();
     int index = qBound(0, m_colorIndex, colorlst.size() - 1);
+    // qCDebug(appLog) << "Utils::getCurHiglightColor() - Using color index:" << index;
     return colorlst.at(index);
 }
 
 void Utils::setObjectNoFocusPolicy(QObject *obj)
 {
+    // qCDebug(appLog) << "Utils::setObjectNoFocusPolicy() - Setting no focus policy for object children";
     QList<QWidget *> list = obj->findChildren<QWidget *>();
+    // qCDebug(appLog) << "Utils::setObjectNoFocusPolicy() - Found" << list.size() << "child widgets";
     foreach (QWidget *w, list) {
-        if (w->objectName().isEmpty())
+        if (w->objectName().isEmpty()) {
+            // qCDebug(appLog) << "Utils::setObjectNoFocusPolicy() - Setting no focus for unnamed widget";
             w->setFocusPolicy(Qt::NoFocus);
+        }
     }
+    // qCDebug(appLog) << "Utils::setObjectNoFocusPolicy() - Focus policy setting completed";
 }
 
 bool Utils::isWayland()
 {
+    qCDebug(appLog) << "Checking for Wayland environment";
     auto e = QProcessEnvironment::systemEnvironment();
     QString XDG_SESSION_TYPE = e.value(QStringLiteral("XDG_SESSION_TYPE"));
     QString WAYLAND_DISPLAY = e.value(QStringLiteral("WAYLAND_DISPLAY"));
 
     if (XDG_SESSION_TYPE == QLatin1String("wayland") || WAYLAND_DISPLAY.contains(QLatin1String("wayland"), Qt::CaseInsensitive)) {
+        qCDebug(appLog) << "Utils::isWayland() - Wayland environment detected";
         return true;
     } else {
+        qCDebug(appLog) << "Utils::isWayland() - Not a Wayland environment";
         return false;
     }
 }
 
 void Utils::setCurrentFilePath(QString currentFilePath)
 {
+    qCDebug(appLog) << "Setting current file path:" << currentFilePath;
     m_currenFilePath = currentFilePath;
 }

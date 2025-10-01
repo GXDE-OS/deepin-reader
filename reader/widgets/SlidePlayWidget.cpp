@@ -5,6 +5,8 @@
 
 #include "SlidePlayWidget.h"
 #include "Utils.h"
+#include "ddlog.h"
+#include <QDebug>
 
 #include <DPlatformWindowHandle>
 #include <DWidget>
@@ -13,14 +15,19 @@
 #include <QDBusInterface>
 #include <QDBusConnection>
 #include <DGuiApplicationHelper>
+#include <DSysInfo>
+
+DCORE_USE_NAMESPACE
 
 SlidePlayWidget::SlidePlayWidget(QWidget *parent) : DFloatingWidget(parent)
 {
+    qCDebug(appLog) << "SlidePlayWidget created, parent:" << parent;
     initControl();
 }
 
 void SlidePlayWidget::initControl()
 {
+    qCDebug(appLog) << "Initializing slide play controls";
     setBlurBackgroundEnabled(true);
     setFramRadius(18);
 
@@ -60,6 +67,7 @@ void SlidePlayWidget::initControl()
     pbtnexit->setFocusPolicy(Qt::NoFocus);
 #ifdef DTKWIDGET_CLASS_DSizeMode
     if (DGuiApplicationHelper::instance()->sizeMode() == DGuiApplicationHelper::NormalMode) {
+        qCDebug(appLog) << "Normal mode";
         m_preBtn->setFixedSize(50, 50);
         m_preBtn->setIconSize(QSize(36, 36));
         m_playBtn->setFixedSize(50, 50);
@@ -69,6 +77,7 @@ void SlidePlayWidget::initControl()
         pbtnexit->setFixedSize(50, 50);
         pbtnexit->setIconSize(QSize(36, 36));
     } else {
+        qCDebug(appLog) << "Compact mode";
         m_preBtn->setFixedSize(36, 36);
         m_preBtn->setIconSize(QSize(24, 24));
         m_playBtn->setFixedSize(36, 36);
@@ -80,6 +89,7 @@ void SlidePlayWidget::initControl()
     }
     connect(DGuiApplicationHelper::instance(), &DGuiApplicationHelper::sizeModeChanged, this, [=](DGuiApplicationHelper::SizeMode sizeMode) {
         if (sizeMode == DGuiApplicationHelper::NormalMode) {
+            qCDebug(appLog) << "Normal mode";
             m_preBtn->setFixedSize(50, 50);
             m_preBtn->setIconSize(QSize(36, 36));
             m_playBtn->setFixedSize(50, 50);
@@ -89,6 +99,7 @@ void SlidePlayWidget::initControl()
             pbtnexit->setFixedSize(50, 50);
             pbtnexit->setIconSize(QSize(36, 36));
         } else {
+            qCDebug(appLog) << "Compact mode";
             m_preBtn->setFixedSize(36, 36);
             m_preBtn->setIconSize(QSize(24, 24));
             m_playBtn->setFixedSize(36, 36);
@@ -108,24 +119,28 @@ void SlidePlayWidget::initControl()
 
 void SlidePlayWidget::showControl()
 {
+    qCDebug(appLog) << "Showing slide play controls";
     m_timer.start();
     this->show();
 }
 
 void SlidePlayWidget::onTimerout()
 {
+    qCDebug(appLog) << "Timer timeout";
     this->hide();
 }
 
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
 void SlidePlayWidget::enterEvent(QEvent *event)
 {
+    qCDebug(appLog) << "Enter event";
     m_timer.stop();
     DFloatingWidget::enterEvent(event);
 }
 #else
 void SlidePlayWidget::enterEvent(QEnterEvent *event)
 {
+    qCDebug(appLog) << "Enter event";
     m_timer.stop();
     DFloatingWidget::enterEvent(event);
 }
@@ -133,12 +148,14 @@ void SlidePlayWidget::enterEvent(QEnterEvent *event)
 
 void SlidePlayWidget::leaveEvent(QEvent *event)
 {
+    qCDebug(appLog) << "Leave event";
     m_timer.start();
     DFloatingWidget::leaveEvent(event);
 }
 
 DIconButton *SlidePlayWidget::createBtn(const QString &strname)
 {
+    qCDebug(appLog) << "Creating button:" << strname;
     DIconButton *btn = new  DIconButton(this);
     btn->setObjectName(strname);
     btn->setFixedSize(50, 50);
@@ -150,12 +167,14 @@ DIconButton *SlidePlayWidget::createBtn(const QString &strname)
 
 void SlidePlayWidget::setPlayStatus(bool play)
 {
+    qCDebug(appLog) << "Setting play status:" << play;
     m_autoPlay = play;
     playStatusChanged();
 }
 
 void SlidePlayWidget::updateProcess(int cur, int total)
 {
+    qCDebug(appLog) << "Updating slide position, current:" << cur << ", total:" << total;
     /* 幻灯片放映时
      * cur:当前页、total总页数
      * 当cur:0, total:3
@@ -165,17 +184,20 @@ void SlidePlayWidget::updateProcess(int cur, int total)
      * 已到最后一页时，再次点击下一页按钮，cur=3,则设置nextBtn为disable
      */
     if(cur <= -1) {
+        qCDebug(appLog) << "Updating slide position, current is less than -1";
         if(m_preBtn->isEnabled())
             Notify(tr("It is the first page"));
         m_preBtn->setEnabled(false);
         m_nextBtn->setEnabled(true);
     } else if(cur >=  total) {
+        qCDebug(appLog) << "Updating slide position, current is greater than total";
         if(m_nextBtn->isEnabled())
             Notify(tr("It is the last page"));
         m_preBtn->setEnabled(true);
         m_nextBtn->setEnabled(false);
         setPlayStatus(false);
     } else {
+        qCDebug(appLog) << "Updating slide position, current is between 0 and total";
         m_preBtn->setEnabled(true);
         m_nextBtn->setEnabled(true);
     }
@@ -183,10 +205,22 @@ void SlidePlayWidget::updateProcess(int cur, int total)
 
 void SlidePlayWidget::Notify(const QString &text)
 {
+    qCDebug(appLog) << "Showing notification:" << text;
     if(nullptr == m_dbusNotify) {
-        m_dbusNotify = new QDBusInterface("com.deepin.dde.Notification",
-                                          "/com/deepin/dde/Notification",
-                                          "com.deepin.dde.Notification",
+        qCDebug(appLog) << "Initializing dbus notify";
+        QString serviceName = "com.deepin.dde.Notification";
+        QString servicePath = "/com/deepin/dde/Notification";
+        QString serviceInterface = "com.deepin.dde.Notification";
+        int osMajor = DSysInfo::majorVersion().toInt();
+        if (osMajor >= 23) {
+            serviceName = "org.deepin.dde.Notification1";
+            servicePath = "/org/deepin/dde/Notification1";
+            serviceInterface = "org.deepin.dde.Notification1";
+        }
+
+        m_dbusNotify = new QDBusInterface(serviceName,
+                                          servicePath,
+                                          serviceInterface,
                                           QDBusConnection::sessionBus(),
                                           this);
     }
@@ -200,45 +234,56 @@ void SlidePlayWidget::Notify(const QString &text)
     QVariantMap hints;
     int timeout = 3000;
     m_dbusNotify->call("Notify", appname, replaces_id, appicon, title, body, actionlist, hints, timeout);
+    qCDebug(appLog) << "Showing notification end";
 }
 
 bool SlidePlayWidget::getPlayStatus()
 {
+    qCDebug(appLog) << "Getting play status";
     return m_autoPlay;
 }
 
 void SlidePlayWidget::onPreClicked()
 {
+    qCDebug(appLog) << "Previous button clicked";
     emit signalPreBtnClicked();
 }
 
 void SlidePlayWidget::onPlayClicked()
 {
+    qCDebug(appLog) << "Play button clicked, new state:" << !m_autoPlay;
     m_autoPlay = !m_autoPlay;
     playStatusChanged();
 }
 
 void SlidePlayWidget::onNextClicked()
 {
+    qCDebug(appLog) << "Next button clicked";
     emit signalNextBtnClicked();
 }
 
 void SlidePlayWidget::onExitClicked()
 {
+    qCDebug(appLog) << "Exit button clicked";
     emit signalExitBtnClicked();
 }
 
 void SlidePlayWidget::playStatusChanged()
 {
+    qCDebug(appLog) << "Play status changed to:" << m_autoPlay;
     if (m_autoPlay) {
+        qCDebug(appLog) << "Play status changed to true";
         m_playBtn->setIcon(QIcon::fromTheme(QString("dr_") + "suspend_normal"));
     } else {
+        qCDebug(appLog) << "Play status changed to false";
         m_playBtn->setIcon(QIcon::fromTheme(QString("dr_") + "play_normal"));
     }
     emit signalPlayBtnClicked();
+    qCDebug(appLog) << "Play status changed end";
 }
 
 void SlidePlayWidget::mousePressEvent(QMouseEvent *)
 {
+    // qCDebug(appLog) << "Mouse press event";
     //Nottodo
 }

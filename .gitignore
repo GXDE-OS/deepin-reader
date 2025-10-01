@@ -29,3 +29,11 @@ build
 
 # vscode
 .vscode
+
+# AI config files
+.roo/
+.ruru/
+.roomodes
+.kilocode/
+.specstory/
+.promptx/

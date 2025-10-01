@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "ProgressDialog.h"
+#include "ddlog.h"
+#include <QDebug>
 
 #include <QPainter>
 #include <QProgressBar>
@@ -13,6 +15,7 @@
 
 ProgressDialog::ProgressDialog(QWidget *parent): DDialog(parent)
 {
+    qCDebug(appLog) << "ProgressDialog created, parent:" << parent;
     setFixedSize(440, 100);
 
     QMargins mar(0, 0, 0, 30);

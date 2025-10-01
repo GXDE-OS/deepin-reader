@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "SecurityDialog.h"
+#include "ddlog.h"
+#include <QDebug>
 
 #include <DFontSizeManager>
 #include <DLabel>
@@ -14,8 +16,9 @@
 
 NewStr autoCutText(const QString &text, DLabel *pDesLbl)
 {
-
+    qCDebug(appLog) << "Auto cutting text";
     if (text.isEmpty() || nullptr == pDesLbl) {
+        qCDebug(appLog) << "Text is empty or label is null";
         return NewStr();
     }
 
@@ -27,9 +30,11 @@ NewStr autoCutText(const QString &text, DLabel *pDesLbl)
     NewStr newstr;
     int width = pDesLbl->width();
     if (titlewidth < width) {
+        qCDebug(appLog) << "Text width is less than label width";
         newstr.strList.append(strText);
         newstr.resultStr += strText;
     } else {
+        qCDebug(appLog) << "Text width is greater than label width";
         for (int i = 0; i < strText.count(); i++) {
             str += strText.at(i);
 
@@ -45,12 +50,14 @@ NewStr autoCutText(const QString &text, DLabel *pDesLbl)
         newstr.resultStr += str;
     }
     newstr.fontHeifht = font_label.height();
+    qCDebug(appLog) << "Auto cutting text end";
     return newstr;
 }
 
 SecurityDialog::SecurityDialog(const QString &urlstr, QWidget *parent)
     : DDialog(parent)
 {
+    qCDebug(appLog) << "SecurityDialog created for URL:" << urlstr << ", parent:" << parent;
     setFixedWidth(380);
     setMinimumHeight(180);
     setIcon(QIcon::fromTheme("deepin-reader"));
@@ -82,11 +89,14 @@ SecurityDialog::SecurityDialog(const QString &urlstr, QWidget *parent)
     addContent(ContentLabel, Qt::AlignHCenter);
 
     autoFeed();
+    qCDebug(appLog) << "SecurityDialog initialized";
 }
 
 void SecurityDialog::autoFeed()
 {
+    qCDebug(appLog) << "Auto feed processing for text:" << m_strDesText;
     if (nullptr == NameLabel || nullptr == ContentLabel) {
+        qCDebug(appLog) << "NameLabel or ContentLabel is null";
         return;
     }
 
@@ -96,19 +106,24 @@ void SecurityDialog::autoFeed()
     ContentLabel->setFixedHeight(height_lable);
 
     if (0 == m_iLabelOldHeight) { // 第一次exec自动调整
+        qCDebug(appLog) << "First exec, adjusting size";
         adjustSize();
     } else {
+        qCDebug(appLog) << "Not first exec, adjusting size";
         m_iDialogOldHeight = height();
         m_iLabelOld1Height = NameLabel->height();
         setFixedHeight(m_iDialogOldHeight - m_iLabelOldHeight - m_iLabelOld1Height
                        + height_lable + NameLabel->height()); //字号变化后自适应调整
     }
     m_iLabelOldHeight = height_lable;
+    qCDebug(appLog) << "Auto feed end";
 }
 
 void SecurityDialog::setLabelColor(DLabel *label, qreal alphaF)
 {
+    qCDebug(appLog) << "Setting label color with alpha:" << alphaF << ", label:" << (label ? "valid" : "null");
     if (nullptr == label) {
+        qCDebug(appLog) << "Label is null";
         return;
     }
     // 根据UI要求使用对应的颜色并设置透明度
@@ -117,16 +132,21 @@ void SecurityDialog::setLabelColor(DLabel *label, qreal alphaF)
     pamessageDetailColor.setAlphaF(alphaF);
     pamessageDetail.setColor(DPalette::Active, DPalette::WindowText, pamessageDetailColor);
     label->setPalette(pamessageDetail); // 设置调色板
+    qCDebug(appLog) << "Label color set";
 }
 
 void SecurityDialog::changeEvent(QEvent *event)
 {
+    // qCDebug(appLog) << "Change event received, type:" << event->type();
     if (QEvent::FontChange == event->type()) {
+        // qCDebug(appLog) << "Font change event received";
         autoFeed();
     } else if (QEvent::ThemeChange == event->type()) { // 根据主题变化重新设置颜色
+        // qCDebug(appLog) << "Theme change event received";
         setLabelColor(NameLabel, 1.0);
         setLabelColor(ContentLabel, 0.7);
     }
 
     DDialog::changeEvent(event);
+    // qCDebug(appLog) << "Change event end";
 }

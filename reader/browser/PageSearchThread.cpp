@@ -6,6 +6,7 @@
 #include "PageSearchThread.h"
 #include "BrowserPage.h"
 #include "SheetRenderer.h"
+#include "ddlog.h"
 
 #include <QRectF>
 #include <QDebug>
@@ -15,39 +16,47 @@ QMap<QChar, QChar> PageSearchThread::m_cjktokangximap;
 
 PageSearchThread::PageSearchThread(QObject *parent) : QThread(parent)
 {
-
+    qCDebug(appLog) << "PageSearchThread created";
 }
 
 PageSearchThread::~PageSearchThread()
 {
+    qCDebug(appLog) << "PageSearchThread destroyed";
     m_quit = true;
     this->wait();
 }
 
 void PageSearchThread::startSearch(DocSheet *sheet, QString text)
 {
+    qCDebug(appLog) << "Starting search for:" << text;
     stopSearch();
     m_quit = false;
     m_startIndex = 0;
     m_sheet = sheet;
     m_searchText = text;
     start();
+    qCDebug(appLog) << "Search thread started";
 }
 
 void PageSearchThread::stopSearch()
 {
+    qCDebug(appLog) << "Stopping search";
     m_quit = true;
     this->wait();
     m_sheet = nullptr;
+    qCDebug(appLog) << "Search stopped";
 }
 
 void PageSearchThread::run()
 {
-    if (nullptr == m_sheet)
+    if (nullptr == m_sheet) {
+        qCWarning(appLog) << "Search run failed: sheet is null";
         return;
+    }
 
     initCJKtoKangxi();
 
+    qCDebug(appLog) << "Searching through" << m_sheet->pageCount() << "pages";
     bool isSearchResultNotEmpty = false; // 没有搜索结果
     int size = m_sheet->pageCount();
     QString searchTextKangxi = m_searchText;
@@ -58,7 +67,10 @@ void PageSearchThread::run()
     }
 
     for (int index = 0; index < size; index++) {
-        if (m_quit) return;
+        if (m_quit) {
+            qCDebug(appLog) << "Search cancelled";
+            return;
+        }
 
         SearchResult searchres;
 
@@ -73,8 +85,10 @@ void PageSearchThread::run()
         bool hasWord = searchres.setctionsFillText(getText);
         //
         if (hasWord) {
+            qCDebug(appLog) << "Found matches on page" << index + 1;
             if (!isSearchResultNotEmpty) {
                 isSearchResultNotEmpty = true;
+                qCDebug(appLog) << "First search result found";
                 // 只要搜索到结果就emit该信号
                 emit sigSearchResultNotEmpty();
             }
@@ -91,7 +105,7 @@ void PageSearchThread::initCJKtoKangxi()
 
     QFile file(":/CJK2Kangxi.dict");
     if (!file.open(QIODevice::ReadOnly)) {
-        qInfo() << "open dictFile error :" << file.error();
+        qCWarning(appLog) << "Failed to open CJK dictionary:" << file.errorString();
         return;
     }
 

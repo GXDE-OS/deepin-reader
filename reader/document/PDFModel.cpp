@@ -7,6 +7,7 @@
 #include "dpdfpage.h"
 #include "dpdfdoc.h"
 #include "Application.h"
+#include "ddlog.h"
 
 #include <QDebug>
 #include <QScreen>
@@ -20,81 +21,106 @@ namespace deepin_reader {
 PDFAnnotation::PDFAnnotation(DPdfAnnot *dannotation) : Annotation(),
     m_dannotation(dannotation)
 {
-
+    // qCDebug(appLog) << "Creating PDF annotation with type:" << (dannotation ? dannotation->type() : -1);
 }
 
 PDFAnnotation::~PDFAnnotation()
 {
+    // qCDebug(appLog) << "Destroying PDF annotation";
+
     m_dannotation = nullptr;
 }
 
 QList<QRectF> PDFAnnotation::boundary() const
 {
+    qCDebug(appLog) << "PDFAnnotation::boundary() - Getting annotation boundary";
     QList<QRectF> rectFList;
 
     if (m_dannotation->type() == DPdfAnnot::AText || m_dannotation->type() == DPdfAnnot::AHighlight) {
-
+        qCDebug(appLog) << "PDFAnnotation::boundary() - Processing text or highlight annotation";
         foreach (QRectF rect, m_dannotation->boundaries())
             rectFList.append(rect);
     }
 
+    qCDebug(appLog) << "PDFAnnotation::boundary() - Returning" << rectFList.size() << "boundaries";
     return rectFList;
 }
 
 QString PDFAnnotation::contents() const
 {
-    if (nullptr == m_dannotation)
+    qCDebug(appLog) << "PDFAnnotation::contents() - Getting annotation contents";
+    if (nullptr == m_dannotation) {
+        qCWarning(appLog) << "Attempt to get contents from null annotation";
         return QString();
+    }
 
-    return m_dannotation->text();
+    QString text = m_dannotation->text();
+    qCDebug(appLog) << "PDFAnnotation::contents() - Returning contents:" << text;
+    return text;
 }
 
 int PDFAnnotation::type()
 {
-    if (nullptr == m_dannotation)
+    qCDebug(appLog) << "PDFAnnotation::type() - Getting annotation type";
+    if (nullptr == m_dannotation) {
+        qCWarning(appLog) << "Attempt to get type from null annotation";
         return -1;
+    }
 
-    return m_dannotation->type();
+    int type = m_dannotation->type();
+    qCDebug(appLog) << "PDFAnnotation::type() - Returning type:" << type;
+    return type;
 }
 
 DPdfAnnot *PDFAnnotation::ownAnnotation()
 {
+    // qCDebug(appLog) << "PDFAnnotation::ownAnnotation() - Getting own annotation pointer";
     return m_dannotation;
 }
 
 PDFPage::PDFPage(QMutex *mutex, DPdfPage *page) :
     m_docMutex(mutex), m_page(page)
 {
-
+    // qCInfo(appLog) << "Creating PDF page handler";
 }
 
 PDFPage::~PDFPage()
 {
-
+    // qCInfo(appLog) << "Destroying PDF page handler";
 }
 
 QSizeF PDFPage::sizeF() const
 {
-    return m_page->sizeF();
+    // qCDebug(appLog) << "PDFPage::sizeF() - Getting page size";
+    QSizeF size = m_page->sizeF();
+    // qCDebug(appLog) << "PDFPage::sizeF() - Returning size:" << size;
+    return size;
 }
 
 QImage PDFPage::render(int width, int height, const QRect &slice) const
 {
+    // qCInfo(appLog) << "Rendering PDF page with size:" << width << "x" << height << "slice:" << slice;
+
     LOCK_DOCUMENT
 
     QRect ratioRect = slice.isValid() ? QRect(slice.x(), slice.y(), slice.width(), slice.height()) : QRect();
 
-    return m_page->image(width, height, ratioRect);
+    QImage result = m_page->image(width, height, ratioRect);
+    // qCDebug(appLog) << "PDFPage::render() - Render completed";
+    return result;
 }
 
 Link PDFPage::getLinkAtPoint(const QPointF &pos)
 {
+    // qCDebug(appLog) << "PDFPage::getLinkAtPoint() - Getting link at point:" << pos;
     Link link;
     const QList<DPdfAnnot *> &dlinkAnnots = m_page->links();
     if (dlinkAnnots.size() > 0) {
+        // qCDebug(appLog) << "PDFPage::getLinkAtPoint() - Found" << dlinkAnnots.size() << "link annotations";
         for (DPdfAnnot *annot : dlinkAnnots) {
             DPdfLinkAnnot *linkAnnot = dynamic_cast<DPdfLinkAnnot *>(annot);
             if (linkAnnot && linkAnnot->pointIn(pos)) {
+                // qCDebug(appLog) << "PDFPage::getLinkAtPoint() - Found matching link annotation";
                 if (!linkAnnot->isValid())
                     m_page->initAnnot(annot);
 
@@ -113,25 +139,32 @@ Link PDFPage::getLinkAtPoint(const QPointF &pos)
             }
         }
     }
+    // qCDebug(appLog) << "PDFPage::getLinkAtPoint() - No matching link found";
     return link;
 }
 
 bool PDFPage::hasWidgetAnnots() const
 {
+    // qCDebug(appLog) << "Checking if page has widget annotations";
     return m_page->widgets().count() > 0;
 }
 
 QString PDFPage::text(const QRectF &rect) const
 {
+    // qCDebug(appLog) << "PDFPage::text() - Getting text from rect:" << rect;
     return m_page->text(rect).simplified();
 }
 
 QList<Word> PDFPage::words()
 {
+    qCInfo(appLog) << "Extracting text words from PDF page";
+
     LOCK_DOCUMENT
 
-    if (m_wordLoaded)
+    if (m_wordLoaded) {
+        qCDebug(appLog) << "PDFPage::words() - Words already loaded, returning cached words";
         return m_words;
+    }
 
     int charCount = 0;
 
@@ -143,8 +176,10 @@ QList<Word> PDFPage::words()
 
     m_wordLoaded = true;
 
-    if (charCount <= 0)
+    if (charCount <= 0) {
+        qCDebug(appLog) << "PDFPage::words() - No characters found, returning empty word list";
         return m_words;
+    }
 
     int index = 0;
 
@@ -156,6 +191,7 @@ QList<Word> PDFPage::words()
 
     while (1) {
         if (index == charCount) {
+            // qCDebug(appLog) << "PDFPage::words() - Processed all characters, appending final row";
             m_words.append(rowWords);
             break;
         }
@@ -267,11 +303,14 @@ QList<Word> PDFPage::words()
 //        m_words.append(word);
 //    }
 
+    qCDebug(appLog) << "PDFPage::words() - Word extraction completed, total words:" << m_words.size();
     return m_words;
 }
 
 QVector<PageSection> PDFPage::search(const QString &text, bool matchCase, bool wholeWords) const
 {
+    qCInfo(appLog) << "Searching PDF page for text:" << text << "matchCase:" << matchCase << "wholeWords:" << wholeWords;
+
     LOCK_DOCUMENT
 
     return m_page->search(text, matchCase, wholeWords);
@@ -279,6 +318,8 @@ QVector<PageSection> PDFPage::search(const QString &text, bool matchCase, bool w
 
 QList< Annotation * > PDFPage::annotations() const
 {
+    qCDebug(appLog) << "Retrieving PDF page annotations";
+
     QList< Annotation * > annotations;
 
     const QList<DPdfAnnot *> &annos = m_page->annots();
@@ -287,20 +328,27 @@ QList< Annotation * > PDFPage::annotations() const
         annotations.append(new PDFAnnotation(dannotation));
     }
 
+    // qCDebug(appLog) << "PDFPage::annotations() - Found" << annotations.size() << "annotations";
     return annotations;
 }
 
 Annotation *PDFPage::addHighlightAnnotation(const QList<QRectF> &boundaries, const QString &text, const QColor &color)
 {
+    qCInfo(appLog) << "Adding highlight annotation with boundaries:" << boundaries << "text:" << text << "color:" << color;
+
     return new PDFAnnotation(m_page->createHightLightAnnot(boundaries, text, color));
 }
 
 bool PDFPage::removeAnnotation(Annotation *annotation)
 {
+    qCInfo(appLog) << "Removing PDF annotation";
+
     PDFAnnotation *PDFAnnotation = static_cast< class PDFAnnotation * >(annotation);
 
-    if (PDFAnnotation == nullptr)
+    if (PDFAnnotation == nullptr) {
+        qCWarning(appLog) << "Attempt to remove null annotation";
         return false;
+    }
 
     m_page->removeAnnot(PDFAnnotation->m_dannotation);
 
@@ -308,62 +356,88 @@ bool PDFPage::removeAnnotation(Annotation *annotation)
 
     delete PDFAnnotation;
 
+    qCDebug(appLog) << "PDFPage::removeAnnotation() - Successfully removed annotation";
     return true;
 }
 
 bool PDFPage::updateAnnotation(Annotation *annotation, const QString &text, const QColor &color)
 {
-    if (nullptr == annotation)
+    qCInfo(appLog) << "Updating PDF annotation with text:" << text << "color:" << color;
+
+    if (nullptr == annotation) {
+        qCWarning(appLog) << "Attempt to update null annotation";
         return false;
+    }
 
     if (m_page->annots().contains(annotation->ownAnnotation())) {
-        if (annotation->type() == DPdfAnnot::AText)
+        qCDebug(appLog) << "PDFPage::updateAnnotation() - Found annotation, updating";
+        if (annotation->type() == DPdfAnnot::AText) {
+            qCDebug(appLog) << "PDFPage::updateAnnotation() - Updating text annotation";
             m_page->updateTextAnnot(annotation->ownAnnotation(), text);
-        else
+        } else {
+            qCDebug(appLog) << "PDFPage::updateAnnotation() - Updating highlight annotation";
             m_page->updateHightLightAnnot(annotation->ownAnnotation(), color, text);
+        }
         return true;
     }
 
+    qCDebug(appLog) << "PDFPage::updateAnnotation() - Failed, annotation not found";
     return false;
 }
 
 Annotation *PDFPage::addIconAnnotation(const QRectF &rect, const QString &text)
 {
-    if (nullptr == m_page)
+    qCInfo(appLog) << "Adding icon annotation at rect:" << rect << "with text:" << text;
+
+    if (nullptr == m_page) {
+        qCritical() << "Attempt to add icon annotation to null page";
         return nullptr;
+    }
 
     return new PDFAnnotation(m_page->createTextAnnot(rect.center(), text));
 }
 
 Annotation *PDFPage::moveIconAnnotation(Annotation *annot, const QRectF &rect)
 {
-    if (nullptr == m_page || nullptr == annot)
+    qCInfo(appLog) << "Moving icon annotation to rect:" << rect;
+
+    if (nullptr == m_page || nullptr == annot) {
+        qCritical() << "Attempt to move icon annotation with null page or annotation";
         return nullptr;
+    }
 
     if (annot->ownAnnotation()) {
+        qCDebug(appLog) << "PDFPage::moveIconAnnotation() - Moving annotation";
         m_page->updateTextAnnot(annot->ownAnnotation(), annot->ownAnnotation()->text(), rect.center());
 
         return annot;
     }
+    qCDebug(appLog) << "PDFPage::moveIconAnnotation() - Failed, no annotation data";
     return nullptr;
 }
 
 PDFDocument::PDFDocument(DPdfDoc *document) :
     m_document(document)
 {
+    qCInfo(appLog) << "Creating PDF document handler with page count:" << (document ? document->pageCount() : 0);
+
     m_docMutex = new QMutex;
 
     QScreen *srn = QApplication::screens().value(0);
     if (nullptr != srn) {
+        qCDebug(appLog) << "PDFDocument::PDFDocument() - Screen DPI set, x:" << m_xRes << "y:" << m_yRes;
         m_xRes = srn->logicalDotsPerInchX(); // 获取屏幕的横纵向逻辑dpi
         m_yRes = srn->logicalDotsPerInchY();
     }
+    qCDebug(appLog) << "PDFDocument::PDFDocument() - Constructor completed";
 }
 
 PDFDocument::~PDFDocument()
 {
+    qCInfo(appLog) << "Destroying PDF document handler";
+
     //需要确保pages先被析构完成
-    qDebug() << "正在释放当前 document ...";
+    qCDebug(appLog) << "Releasing PDF document resources...";
 
     m_docMutex->lock();
 
@@ -374,98 +448,136 @@ PDFDocument::~PDFDocument()
     m_docMutex->unlock();
 
     delete m_docMutex;
-    qDebug() << "当前 document 已释放";
+    qCDebug(appLog) << "PDF document resources released";
 }
 
 int PDFDocument::pageCount() const
 {
+    qCDebug(appLog) << "Retrieving PDF document page count";
+
     return m_document->pageCount();
 }
 
 Page *PDFDocument::page(int index) const
 {
-    if (DPdfPage *page = m_document->page(index, m_xRes, m_yRes)) {
+    qCInfo(appLog) << "Retrieving PDF page at index:" << index;
 
-        if (page->isValid())
+    if (DPdfPage *page = m_document->page(index, m_xRes, m_yRes)) {
+        qCDebug(appLog) << "PDFDocument::page() - Page object created";
+        if (page->isValid()) {
+            qCDebug(appLog) << "PDF page at index" << index << "is valid";
             return new PDFPage(m_docMutex, page);
+        }
+        qCWarning(appLog) << "PDF page at index" << index << "is invalid";
     }
 
+    qCDebug(appLog) << "PDFDocument::page() - Returning null page";
     return nullptr;
 }
 
 QString PDFDocument::label(int index) const
 {
+    qCDebug(appLog) << "Retrieving label for PDF page at index:" << index;
+
     return m_document->label(index);
 }
 
 QStringList PDFDocument::saveFilter() const
 {
+    qCDebug(appLog) << "Retrieving PDF save filters";
+
     return QStringList() << "Portable document format (*.pdf)";
 }
 
 bool PDFDocument::save() const
 {
+    qCInfo(appLog) << "Saving PDF document";
+
     return m_document->save();
 }
 
 bool PDFDocument::saveAs(const QString &filePath) const
 {
+    qCInfo(appLog) << "Saving PDF document as:" << filePath;
+
     return m_document->saveAs(filePath);
 }
 
 void collectOuleLine(const DPdfDoc::Outline &cOutline, Outline &outline)
 {
+    qCDebug(appLog) << "collectOuleLine() - Processing outline with" << cOutline.size() << "sections";
     for (const DPdfDoc::Section &cSection : cOutline) {
         Section setction;
         setction.nIndex = cSection.nIndex;
         setction.title = cSection.title;
         setction.offsetPointF = cSection.offsetPointF;
         if (cSection.children.size() > 0) {
+            // qCDebug(appLog) << "collectOuleLine() - Processing" << cSection.children.size() << "child sections";
             collectOuleLine(cSection.children, setction.children);
         }
         outline << setction;
     }
+    qCDebug(appLog) << "collectOuleLine() - Completed processing outline";
 }
 
 Outline PDFDocument::outline() const
 {
-    if (m_outline.size() > 0)
+    qCInfo(appLog) << "Retrieving PDF document outline";
+
+    if (m_outline.size() > 0) {
+        qCDebug(appLog) << "Returning cached PDF outline";
         return m_outline;
+    }
 
     const DPdfDoc::Outline &cOutline = m_document->outline(m_xRes, m_yRes);
 
     collectOuleLine(cOutline, m_outline);
 
+    qCDebug(appLog) << "PDFDocument::outline() - Outline built with" << m_outline.size() << "sections";
     return m_outline;
 }
 
 Properties PDFDocument::properties() const
 {
-    if (m_fileProperties.size() > 0)
+    qCInfo(appLog) << "Retrieving PDF document properties";
+
+    if (m_fileProperties.size() > 0) {
+        qCDebug(appLog) << "Returning cached PDF properties";
         return m_fileProperties;
+    }
 
     m_fileProperties = m_document->proeries();
 
+    qCDebug(appLog) << "PDFDocument::properties() - Properties loaded, count:" << m_fileProperties.size();
     return m_fileProperties;
 }
 
 PDFDocument *PDFDocument::loadDocument(const QString &filePath, const QString &password, deepin_reader::Document::Error &error)
 {
+    qCInfo(appLog) << "Loading PDF document from:" << filePath << "with password:" << (!password.isEmpty() ? "[provided]" : "[not provided]");
+
     DPdfDoc *document = new DPdfDoc(filePath, password);
 
     if (document->status() == DPdfDoc::SUCCESS) {
+        qCInfo(appLog) << "PDF document loaded successfully";
         error = Document::NoError;
         return new PDFDocument(document);
     } else if (document->status() == DPdfDoc::PASSWORD_ERROR) {
-        if (password.isEmpty())
+        qCDebug(appLog) << "PDFDocument::loadDocument() - Document status: PASSWORD_ERROR";
+        if (password.isEmpty()) {
+            qCWarning(appLog) << "PDF document requires password but none provided";
             error = Document::NeedPassword;
-        else
+        } else {
+            qCWarning(appLog) << "Incorrect password provided for PDF document";
             error = Document::WrongPassword;
-    } else
+        }
+    } else {
+        qCritical() << "Failed to load PDF document, error code:" << document->status();
         error = Document::FileError;
+    }
 
     delete document;
-
+    qCDebug(appLog) << "PDFDocument::loadDocument() - Returning null document";
     return nullptr;
 }
 }

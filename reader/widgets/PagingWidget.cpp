@@ -6,6 +6,8 @@
 #include "PagingWidget.h"
 #include "DocSheet.h"
 #include "TMFunctionThread.h"
+#include "ddlog.h"
+#include <QDebug>
 
 #include <QValidator>
 
@@ -18,6 +20,7 @@
 PagingWidget::PagingWidget(DocSheet *sheet, DWidget *parent)
     : BaseWidget(parent), m_sheet(sheet)
 {
+    qCDebug(appLog) << "PagingWidget created";
     initWidget();
 
     slotUpdateTheme();
@@ -29,7 +32,7 @@ PagingWidget::PagingWidget(DocSheet *sheet, DWidget *parent)
 
 PagingWidget::~PagingWidget()
 {
-
+    qCDebug(appLog) << "PagingWidget destroyed";
 }
 
 /**
@@ -38,6 +41,7 @@ PagingWidget::~PagingWidget()
  */
 void PagingWidget::initWidget()
 {
+    qCDebug(appLog) << "Initializing paging widget";
     m_pTotalPagesLab = new DLabel(this);
     m_pTotalPagesLab->setAccessibleName("Label_TotalPage");
 
@@ -94,32 +98,42 @@ void PagingWidget::initWidget()
     hLayout->addWidget(m_pNextPageBtn);
 
     this->setLayout(hLayout);
+    qCDebug(appLog) << "Paging widget initialized";
 }
 
 void PagingWidget::slotUpdateTheme()
 {
+    qCDebug(appLog) << "slotUpdateTheme";
     if (m_pTotalPagesLab) {
+        qCDebug(appLog) << "slotUpdateTheme m_pTotalPagesLab";
         m_pTotalPagesLab->setForegroundRole(DPalette::Text);
     }
 
     if (m_pCurrentPageLab) {
+        qCDebug(appLog) << "slotUpdateTheme m_pCurrentPageLab";
         m_pCurrentPageLab->setForegroundRole(DPalette::Text);
     }
 }
 
 void PagingWidget::setBtnState(const int &currntPage, const int &totalPage)
 {
+    qCDebug(appLog) << "setBtnState";
     if (currntPage == 1) {// 第一页
+        qCDebug(appLog) << "setBtnState currntPage == 1";
         m_pPrePageBtn->setEnabled(false);
         if (totalPage == 1) {// 也是最后一页
+            qCDebug(appLog) << "setBtnState currntPage == 1 totalPage == 1";
             m_pNextPageBtn->setEnabled(false);
         } else {
+            qCDebug(appLog) << "setBtnState currntPage == 1 totalPage != 1";
             m_pNextPageBtn->setEnabled(true);
         }
     } else if (currntPage == totalPage) {// 最后一页
+        qCDebug(appLog) << "setBtnState currntPage == totalPage";
         m_pPrePageBtn->setEnabled(true);
         m_pNextPageBtn->setEnabled(false);
     } else {// 中间页
+        qCDebug(appLog) << "setBtnState currntPage != 1 && currntPage != totalPage";
         m_pPrePageBtn->setEnabled(true);
         m_pNextPageBtn->setEnabled(true);
     }
@@ -127,14 +141,17 @@ void PagingWidget::setBtnState(const int &currntPage, const int &totalPage)
 
 void PagingWidget::resizeEvent(QResizeEvent *event)
 {
+    qCDebug(appLog) << "resizeEvent";
     if (m_curIndex >= 0)
         setIndex(m_curIndex);
 
     this->QWidget::resizeEvent(event);
+    qCDebug(appLog) << "resizeEvent end";
 }
 
 void PagingWidget::setIndex(int index)
 {
+    qCDebug(appLog) << "Setting page index:" << index;
     if (nullptr == m_sheet)
         return;
 
@@ -149,18 +166,21 @@ void PagingWidget::setIndex(int index)
     m_pTotalPagesLab->setToolTip(QString("%1").arg(totalPage));
 
     if (m_bHasLabel) {
+        qCDebug(appLog) << "setIndex m_bHasLabel";
         m_pCurrentPageLab->setText(m_pCurrentPageLab->fontMetrics().elidedText(QString::number(currntPage), Qt::ElideRight, iControlMaxWidth));
         m_pCurrentPageLab->setToolTip(QString::number(currntPage));
 
         QString sPage = m_sheet->getPageLabelByIndex(inputData);
         m_pJumpPageLineEdit->setText(m_pJumpPageLineEdit->fontMetrics().elidedText(sPage, Qt::ElideRight, m_pJumpPageLineEdit->width() - LineEditSpacing));
     } else {
+        qCDebug(appLog) << "setIndex m_bHasLabel";
         m_pJumpPageLineEdit->setText(m_pJumpPageLineEdit->fontMetrics().elidedText(QString::number(currntPage), Qt::ElideRight, m_pJumpPageLineEdit->width() - LineEditSpacing));
     }
 }
 
 void PagingWidget::handleOpenSuccess()
 {
+    qCDebug(appLog) << "Document opened successfully, checking page labels";
     if (nullptr == m_sheet)
         return;
 
@@ -176,21 +196,26 @@ void PagingWidget::handleOpenSuccess()
 
 void PagingWidget::SlotJumpPageLineEditReturnPressed()
 {
+    qCDebug(appLog) << "Page jump requested, hasLabel:" << m_bHasLabel;
     if (m_bHasLabel) {
+        qCDebug(appLog) << "Page jump requested, hasLabel: m_bHasLabel";
         pageNumberJump();
     } else {
+        qCDebug(appLog) << "Page jump requested, hasLabel: !m_bHasLabel";
         normalChangePage();
     }
 }
 
 void PagingWidget::onEditFinished()
 {
+    qCDebug(appLog) << "onEditFinished";
     if (m_curIndex >= 0)
         setIndex(m_curIndex);
 }
 
 void PagingWidget::normalChangePage()
 {
+    qCDebug(appLog) << "Normal page change requested, text:" << m_pJumpPageLineEdit->text();
     QString sText = m_pJumpPageLineEdit->text();
     int iPage = sText.toInt();
     if (iPage <= 0 || iPage > m_sheet->pageCount()) {
@@ -202,29 +227,35 @@ void PagingWidget::normalChangePage()
 
 void PagingWidget::pageNumberJump()
 {
+    qCDebug(appLog) << "Page number jump requested, text:" << m_pJumpPageLineEdit->text();
     int nPageSum = m_sheet->pageCount();
     QString sText = m_pJumpPageLineEdit->text();
     int iPage = m_sheet->getIndexByPageLable(sText);
 
     if (iPage > -1 && iPage < nPageSum) {   //  输入的页码 必须在 0-最大值 之间, 才可以
+        qCDebug(appLog) << "Page number jump requested, iPage:" << iPage;
         m_sheet->jumpToIndex(iPage);
     } else {
+        qCDebug(appLog) << "Page number jump requested, iPage:" << iPage << "is not valid";
         normalChangePage();
     }
 }
 
 void PagingWidget::slotPrePageBtnClicked()
 {
+    qCDebug(appLog) << "Previous page button clicked";
     m_sheet->jumpToPrevPage();
 }
 
 void PagingWidget::slotNextPageBtnClicked()
 {
+    qCDebug(appLog) << "Next page button clicked";
     m_sheet->jumpToNextPage();
 }
 
 void PagingWidget::setTabOrderWidget(QList<QWidget *> &tabWidgetlst)
 {
+    qCDebug(appLog) << "setTabOrderWidget";
     tabWidgetlst << m_pJumpPageLineEdit;
     tabWidgetlst << m_pPrePageBtn;
     tabWidgetlst << m_pNextPageBtn;
@@ -232,6 +263,7 @@ void PagingWidget::setTabOrderWidget(QList<QWidget *> &tabWidgetlst)
 
 void PagingWidget::onFuncThreadFinished()
 {
+    qCDebug(appLog) << "Page label check completed, hasLabel:" << m_tmFuncThread->result.toBool();
     m_bHasLabel = m_tmFuncThread->result.toBool();
     m_pCurrentPageLab->setVisible(m_bHasLabel);
     int currentIndex = m_sheet->currentIndex();

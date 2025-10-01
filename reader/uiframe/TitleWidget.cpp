@@ -9,12 +9,14 @@
 #include "MsgHeader.h"
 #include "MainWindow.h"
 #include "Application.h"
+#include "ddlog.h"
 
 #include <QHBoxLayout>
 
 TitleWidget::TitleWidget(DWidget *parent)
     : BaseWidget(parent)
 {
+    qCDebug(appLog) << "Initializing TitleWidget...";
     m_pThumbnailBtn = new DIconButton(this);
     m_pThumbnailBtn->setObjectName("Thumbnails");
     m_pThumbnailBtn->setToolTip(tr("Thumbnails"));
@@ -85,57 +87,70 @@ TitleWidget::TitleWidget(DWidget *parent)
         m_pThumbnailBtn->setFixedSize(QSize(36, 36));
         m_pThumbnailBtn->setIconSize(QSize(36, 36));
 #endif
+    qCDebug(appLog) << "TitleWidget initialized";
 }
 
 TitleWidget::~TitleWidget()
 {
-
+    // qCDebug(appLog) << "Destroying TitleWidget...";
 }
 
 void TitleWidget::keyPressEvent(QKeyEvent *event)
 {
-    if (nullptr == m_pSw)
+    // qCDebug(appLog) << "TitleWidget::keyPressEvent start - key:" << event->key();
+    if (nullptr == m_pSw) {
+        // qCDebug(appLog) << "Scale widget is null, delegating to base";
         return BaseWidget::keyPressEvent(event);
+    }
 
     if (event->key() == Qt::Key_Up && !event->isAutoRepeat()) {
+        // qCDebug(appLog) << "Up key pressed, previous scale";
         m_pSw->onPrevScale();
     } else if (event->key() == Qt::Key_Down && !event->isAutoRepeat()) {
+        // qCDebug(appLog) << "Down key pressed, next scale";
         m_pSw->onNextScale();
     }
 
+    // qCDebug(appLog) << "TitleWidget::keyPressEvent end";
     return BaseWidget::keyPressEvent(event);
 }
 
 void TitleWidget::setBtnDisable(const bool &bAble)
 {
+    qCDebug(appLog) << "Setting button disable:" << bAble;
     m_pThumbnailBtn->setDisabled(bAble);
     m_pSw->setDisabled(bAble);
 }
 
 void TitleWidget::onCurSheetChanged(DocSheet *sheet)
 {
+    qCDebug(appLog) << "Current sheet changed";
     m_curSheet = sheet;
 
     emit dApp->emitSheetChanged();
 
     if (nullptr == m_curSheet || m_curSheet->fileType() == Dr::Unknown) {
+        qCWarning(appLog) << "Invalid sheet, disabling controls";
         setBtnDisable(true);
         return;
+    }
 
-    } else if (Dr::PDF == m_curSheet->fileType() || Dr::DOCX == m_curSheet->fileType()) {
+    qCDebug(appLog) << "Setting up controls for file type:" << m_curSheet->fileType();
+    if (Dr::PDF == m_curSheet->fileType() || Dr::DOCX == m_curSheet->fileType()) {
         if (m_curSheet->opened()) {
+            qCDebug(appLog) << "Document opened, enabling controls";
             setBtnDisable(false);
             m_pThumbnailBtn->setChecked(m_curSheet->operation().sidebarVisible);
         } else {
+            qCDebug(appLog) << "Document not opened, disabling controls";
             setBtnDisable(true);
             m_pThumbnailBtn->setChecked(false);
         }
         m_pSw->setSheet(m_curSheet);
-
     } else if (Dr::DJVU == m_curSheet->fileType()) {
+        qCDebug(appLog) << "DJVU document, setting up controls";
         m_pThumbnailBtn->setDisabled(false);
         m_pSw->setDisabled(false);
-
         m_pThumbnailBtn->setChecked(m_curSheet->operation().sidebarVisible);
         m_pSw->setSheet(m_curSheet);
     }
@@ -143,29 +158,40 @@ void TitleWidget::onCurSheetChanged(DocSheet *sheet)
 
 void TitleWidget::onThumbnailBtnClicked(bool checked)
 {
-    if (m_curSheet.isNull())
+    qCDebug(appLog) << "Thumbnail button clicked, checked:" << checked;
+    if (m_curSheet.isNull()) {
+        qCWarning(appLog) << "Thumbnail button clicked but no current sheet";
         return;
+    }
 
     m_pThumbnailBtn->setChecked(checked);
     bool rl = m_pThumbnailBtn->isChecked();
+    qCDebug(appLog) << "Setting sidebar visibility to:" << rl;
     m_curSheet->setSidebarVisible(rl);
+    qCDebug(appLog) << "Thumbnail button clicked, checked:" << checked;
 }
 
 void TitleWidget::onFindOperation(const int &sAction)
 {
+    qCDebug(appLog) << "Finding operation:" << sAction;
     if (sAction == E_FIND_CONTENT) {
+        qCDebug(appLog) << "Finding operation content";
         m_pThumbnailBtn->setChecked(true);
     } else if (sAction == E_FIND_EXIT) {
+        qCDebug(appLog) << "Finding operation exit";
         if (m_curSheet) {
             bool close = m_curSheet->operation().sidebarVisible;
             m_pThumbnailBtn->setChecked(close);
         }
     }
+    qCDebug(appLog) << "Finding operation end";
 }
 
 void TitleWidget::setControlEnabled(const bool &enable)
 {
+    qCDebug(appLog) << "Setting controls enabled:" << enable;
     m_pThumbnailBtn->setChecked(false);
     m_pThumbnailBtn->setEnabled(enable);
     m_pSw->clear();
+    qCDebug(appLog) << "Setting controls enabled end";
 }
