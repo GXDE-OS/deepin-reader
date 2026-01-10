@@ -37,3 +37,6 @@ build
 .kilocode/
 .specstory/
 .promptx/
+.spec-workflow/
+.cursorindexingignore
+.cursor/

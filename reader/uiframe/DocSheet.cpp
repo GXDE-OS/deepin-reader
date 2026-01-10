@@ -37,6 +37,8 @@
 #include <QDebug>
 #include <QTemporaryDir>
 #include <QProcess>
+#include <QPrinter>
+#include <QtMath>
 #include <QGraphicsDropShadowEffect>
 
 #include <signal.h>
@@ -45,6 +47,12 @@ extern "C" {
 #include "load_libs.h"
 }
 DWIDGET_USE_NAMESPACE
+
+namespace {
+constexpr double kXpsLogicalDpi = 96.0;
+constexpr int kFallbackPrintDpi = 300;
+constexpr int kMaxPrintPixelsPerSide = 10000;
+}
 
 QReadWriteLock DocSheet::g_lock;
 QStringList DocSheet::g_uuidList;
@@ -76,6 +84,10 @@ DocSheet::DocSheet(const Dr::FileType &fileType, const QString &filePath,  QWidg
         m_sidebar = new SheetSidebar(this, PREVIEW_THUMBNAIL | PREVIEW_BOOKMARK);
     else if (Dr::DOCX == fileType)
         m_sidebar = new SheetSidebar(this, PREVIEW_THUMBNAIL | PREVIEW_CATALOG | PREVIEW_BOOKMARK | PREVIEW_NOTE);
+#ifdef XPS_SUPPORT_ENABLED
+    else if (Dr::XPS == fileType)
+        m_sidebar = new SheetSidebar(this, PREVIEW_THUMBNAIL | PREVIEW_CATALOG | PREVIEW_BOOKMARK);
+#endif
     else
         m_sidebar = new SheetSidebar(this);
 
@@ -504,6 +516,58 @@ QImage DocSheet::getImage(int index, int width, int height, const QRect &slice)
     return m_renderer->getImage(index, width, height, slice);;
 }
 
+QSize DocSheet::calculatePrintTargetSize(int pageIndex, const QPrinter &printer, const QRectF &pageRect) const
+{
+#ifdef XPS_SUPPORT_ENABLED
+    if (m_fileType != Dr::XPS) {
+        return QSize();
+    }
+#endif
+
+    const QSizeF logicalSize = m_renderer ? m_renderer->getPageSize(pageIndex) : QSizeF();
+    if (logicalSize.isEmpty() || logicalSize.width() <= 0.0 || logicalSize.height() <= 0.0) {
+        qCWarning(appLog) << "Unable to determine logical page size for high DPI print. index:" << pageIndex;
+        return QSize();
+    }
+
+    int printerDpi = printer.resolution();
+    if (printerDpi <= 0) {
+        qCWarning(appLog) << "Printer resolution is invalid, fallback to default DPI:" << kFallbackPrintDpi;
+        printerDpi = kFallbackPrintDpi;
+    }
+
+    double widthPixels = logicalSize.width() / kXpsLogicalDpi * static_cast<double>(printerDpi);
+    double heightPixels = logicalSize.height() / kXpsLogicalDpi * static_cast<double>(printerDpi);
+
+    if (widthPixels <= 0.0 || heightPixels <= 0.0) {
+        qCWarning(appLog) << "Calculated print size is invalid:" << widthPixels << heightPixels;
+        return QSize();
+    }
+
+    if (pageRect.width() > 0.0 && pageRect.height() > 0.0) {
+        const double scale = qMin(pageRect.width() / widthPixels, pageRect.height() / heightPixels);
+        if (scale < 1.0) {
+            widthPixels *= scale;
+            heightPixels *= scale;
+        }
+    }
+
+    const double maxDimension = qMax(widthPixels, heightPixels);
+    if (maxDimension > kMaxPrintPixelsPerSide) {
+        const double clampScale = static_cast<double>(kMaxPrintPixelsPerSide) / maxDimension;
+        widthPixels *= clampScale;
+        heightPixels *= clampScale;
+        qCWarning(appLog) << "Requested print resolution too large, clamping to" << kMaxPrintPixelsPerSide << "pixels. index:" << pageIndex;
+    }
+
+    const int roundedWidth = qMax(1, qRound(widthPixels));
+    const int roundedHeight = qMax(1, qRound(heightPixels));
+
+    qCDebug(appLog) << "Calculated print target size for page" << pageIndex << ":" << roundedWidth << "x" << roundedHeight << "@" << printerDpi << "DPI";
+
+    return QSize(roundedWidth, roundedHeight);
+}
+
 bool DocSheet::fileChanged()
 {
     qCDebug(appLog) << "fileChanged";
@@ -534,6 +598,15 @@ bool DocSheet::saveAsData(QString targetFilePath)
     qCDebug(appLog) << "Saving document as:" << targetFilePath;
     stopSearch();
 
+#ifdef XPS_SUPPORT_ENABLED
+    // XPS can be saved as XPS (copy) or exported to PDF (conversion)
+    // Always use saveAs() to handle both cases
+    if (Dr::XPS == fileType()) {
+        qCDebug(appLog) << "XPS saveAs:" << targetFilePath;
+        if (!m_renderer->saveAs(targetFilePath))
+            return false;
+    } else
+#endif
     if (m_documentChanged && Dr::DOCX != fileType()) {
         qCDebug(appLog) << "Saving document as:" << targetFilePath;
         if (!m_renderer->saveAs(targetFilePath))
@@ -725,6 +798,17 @@ QString DocSheet::filter()
         return  "Pdf File (*.pdf)";
     else if (Dr::DJVU == m_fileType)
         return "Djvu files (*.djvu)";
+#ifdef XPS_SUPPORT_ENABLED
+    else if (Dr::XPS == m_fileType) {
+        // XPS can be saved as XPS or exported to PDF
+        if (m_renderer && m_renderer->opened()) {
+            // Try to get filters from document if available
+            // For now, return both XPS and PDF filters
+            return QStringLiteral("XPS files (*.xps);;Portable document format (*.pdf)");
+        }
+        return QStringLiteral("XPS files (*.xps);;Portable document format (*.pdf)");
+    }
+#endif
 
     qCDebug(appLog) << "filter end, return:";
     return "";
@@ -866,22 +950,76 @@ void DocSheet::onPrintRequested(DPrinter *printer, const QVector<int> &pageRange
 
     painter.setRenderHints(QPainter::Antialiasing | QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
 
+#ifdef XPS_SUPPORT_ENABLED
+    const bool isXpsDocument = (m_fileType == Dr::XPS);
+#else
+    const bool isXpsDocument = false;
+#endif
+    auto targetRectForSize = [&pageRect](const QSize &sourceSize) -> QRect {
+        if (!sourceSize.isValid() || sourceSize.isEmpty()) {
+            return QRect();
+        }
+
+        qreal targetWidth = pageRect.width();
+        qreal targetHeight = targetWidth * static_cast<qreal>(sourceSize.height()) / static_cast<qreal>(sourceSize.width());
+
+        if (targetHeight > pageRect.height()) {
+            targetHeight = pageRect.height();
+            targetWidth = targetHeight * static_cast<qreal>(sourceSize.width()) / static_cast<qreal>(sourceSize.height());
+        }
+
+        const int left = qRound((pageRect.width() - targetWidth) / 2.0);
+        const int top = qRound((pageRect.height() - targetHeight) / 2.0);
+        return QRect(left,
+                     top,
+                     qMax(1, qRound(targetWidth)),
+                     qMax(1, qRound(targetHeight)));
+    };
+
     for (int i = 0; i < pageRange.count(); ++i) {
         if (pageRange[i] > pageCount() || pageRange[i] > m_browser->pages().count())
             continue;
 
-        const QRectF boundingrect = m_browser->pages().at(pageRange[i] - 1)->boundingRect(); //文档页缩放后的原区域不受旋转影响
-        qreal printWidth = pageRect.width(); //适合打印的图片宽度
-        qreal printHeight = printWidth * boundingrect.height() / boundingrect.width(); //适合打印的图片高度
-        if (printHeight > pageRect.height()) {
-            printHeight = pageRect.height();
-            printWidth = printHeight * boundingrect.width() / boundingrect.height();
+        QImage image;
+        QRect targetRect;
+
+        if (isXpsDocument) {
+            const int zeroBasedIndex = pageRange[i] - 1;
+            const QSize requestedSize = calculatePrintTargetSize(zeroBasedIndex, *printer, pageRect);
+            if (!requestedSize.isValid()) {
+                qCWarning(appLog) << "Falling back to view-based print size for XPS page" << zeroBasedIndex;
+            }
+
+            if (requestedSize.isValid()) {
+                image = loading.getImageForPrint(this, zeroBasedIndex, requestedSize);
+                targetRect = targetRectForSize(image.size());
+            }
         }
 
-        QImage image = loading.getImage(this, pageRange[i] - 1, static_cast<int>(printWidth), static_cast<int>(printHeight));
-        painter.drawImage(QRect((static_cast<int>(pageRect.width()) - image.width()) / 2,
-                                (static_cast<int>(pageRect.height()) - image.height()) / 2,
-                                image.width(), image.height()), image);
+        if (image.isNull()) {
+            const QRectF boundingrect = m_browser->pages().at(pageRange[i] - 1)->boundingRect();
+            qreal printWidth = pageRect.width();
+            qreal printHeight = printWidth * boundingrect.height() / boundingrect.width();
+            if (printHeight > pageRect.height()) {
+                printHeight = pageRect.height();
+                printWidth = printHeight * boundingrect.width() / boundingrect.height();
+            }
+            image = loading.getImage(this, pageRange[i] - 1, static_cast<int>(printWidth), static_cast<int>(printHeight));
+            targetRect = QRect((static_cast<int>(pageRect.width()) - image.width()) / 2,
+                               (static_cast<int>(pageRect.height()) - image.height()) / 2,
+                               image.width(), image.height());
+        }
+
+        if (image.isNull()) {
+            qCWarning(appLog) << "Failed to render image for printing page" << pageRange[i];
+            continue;
+        }
+
+        if (!targetRect.isValid()) {
+            targetRect = targetRectForSize(image.size());
+        }
+
+        painter.drawImage(targetRect, image, image.rect());
 
         if (i != pageRange.count() - 1)
             printer->newPage();
@@ -942,13 +1080,66 @@ void DocSheet::onPrintRequested(DPrinter *printer)
     LoadingWidget loading(qApp->activeWindow());
     loading.show();
 
+#ifdef XPS_SUPPORT_ENABLED
+    const bool isXpsDocument = (m_fileType == Dr::XPS);
+#else
+    const bool isXpsDocument = false;
+#endif
+    auto targetRectForSize = [&pageRect](const QSize &sourceSize) -> QRect {
+        if (!sourceSize.isValid() || sourceSize.isEmpty()) {
+            return QRect();
+        }
+
+        qreal targetWidth = pageRect.width();
+        qreal targetHeight = targetWidth * static_cast<qreal>(sourceSize.height()) / static_cast<qreal>(sourceSize.width());
+
+        if (targetHeight > pageRect.height()) {
+            targetHeight = pageRect.height();
+            targetWidth = targetHeight * static_cast<qreal>(sourceSize.width()) / static_cast<qreal>(sourceSize.height());
+        }
+
+        const int left = qRound((pageRect.width() - targetWidth) / 2.0);
+        const int top = qRound((pageRect.height() - targetHeight) / 2.0);
+        return QRect(left,
+                     top,
+                     qMax(1, qRound(targetWidth)),
+                     qMax(1, qRound(targetHeight)));
+    };
+
     for (int index = fromIndex; index <= toIndex; index++) {
         if (index >= pagesCount)
             break;
 
-        QImage imageX3 = loading.getImage(this, index, int(pageRect.width() * 3), int(pageRect.height() * 3));
+        QImage image;
+        QRect targetRect;
 
-        painter.drawImage(pageRect, imageX3, QRect(0, 0, imageX3.width(), imageX3.height()));
+        if (isXpsDocument) {
+            const QSize requestedSize = calculatePrintTargetSize(index, *printer, pageRect);
+            if (!requestedSize.isValid()) {
+                qCWarning(appLog) << "Falling back to view-based print size for XPS page" << index;
+            } else {
+                image = loading.getImageForPrint(this, index, requestedSize);
+                targetRect = targetRectForSize(image.size());
+            }
+        }
+
+        if (image.isNull()) {
+            const int fallbackWidth = int(pageRect.width() * 3);
+            const int fallbackHeight = int(pageRect.height() * 3);
+            image = loading.getImage(this, index, fallbackWidth, fallbackHeight);
+            targetRect = pageRect.toRect();
+        }
+
+        if (image.isNull()) {
+            qCWarning(appLog) << "Failed to render image for printing page" << index;
+            continue;
+        }
+
+        if (!targetRect.isValid()) {
+            targetRect = targetRectForSize(image.size());
+        }
+
+        painter.drawImage(targetRect, image, image.rect());
         if (index != toIndex)
             printer->newPage();
     }
@@ -1182,13 +1373,27 @@ void DocSheet::docBasicInfo(deepin_reader::FileInfo &tFileInfo)
     tFileInfo.size = fileInfo.size();
     tFileInfo.createTime = fileInfo.birthTime();
     tFileInfo.changeTime = fileInfo.lastModified();
-    tFileInfo.auther = fileInfo.owner();
     tFileInfo.filePath = fileInfo.filePath();
 
     const Properties &propertys = m_renderer->properties();
     tFileInfo.format = format();
     tFileInfo.optimization = propertys.value("Linearized").toBool();
-    tFileInfo.keyword = propertys.value("KeyWords").toString();
+    QString keywords = propertys.value("KeyWords").toString();
+    if (keywords.isEmpty()) {
+        keywords = propertys.value("Keywords").toString();
+    }
+    tFileInfo.keyword = keywords;
+
+    QString author = propertys.value("Author").toString();
+    if (author.isEmpty()) {
+        author = propertys.value("Creator").toString();
+    }
+    if (author.isEmpty()) {
+        author = fileInfo.owner();
+        qCDebug(appLog) << "Using file owner as fallback author for document";
+    }
+    tFileInfo.auther = author;
+
     tFileInfo.theme = propertys.value("Title").toString();
     tFileInfo.producter = propertys.value("Producer").toString();
     tFileInfo.creater = propertys.value("Creator").toString();
@@ -1572,6 +1777,35 @@ QImage DocSheet::LoadingWidget::getImage(DocSheet *doc, int index, int width, in
     loop.exec(QEventLoop::ExcludeSocketNotifiers);
 
     qCDebug(appLog) << "getImage end";
+    return image;
+}
+
+QImage DocSheet::LoadingWidget::getImageForPrint(DocSheet *doc, int index, const QSize &targetSize)
+{
+    qCDebug(appLog) << "getImageForPrint" << targetSize;
+    if (!doc) {
+        qCWarning(appLog) << "DocSheet pointer is null when requesting print image";
+        return QImage();
+    }
+    if (!targetSize.isValid() || targetSize.width() <= 0 || targetSize.height() <= 0) {
+        qCWarning(appLog) << "Invalid target size for print image" << targetSize;
+        return QImage();
+    }
+
+    QImage image;
+    QEventLoop loop;
+    const QSize requestSize = targetSize;
+    QThread *thread = QThread::create([ =, &image]() {
+        image = doc->getImage(index, requestSize.width(), requestSize.height());
+    });
+    QObject::connect(thread, &QThread::finished, &loop, &QEventLoop::quit);
+    QObject::connect(thread, &QThread::finished, thread, &QThread::deleteLater);
+
+    thread->start();
+
+    loop.exec(QEventLoop::ExcludeSocketNotifiers);
+
+    qCDebug(appLog) << "getImageForPrint end";
     return image;
 }
 

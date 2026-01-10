@@ -1,0 +1,1154 @@
+// Copyright (C) 2019 ~ 2025 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2025 UnionTech Software Technology Co., Ltd.
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "XpsDocumentAdapter.h"
+
+#include "XpsTextExtractor.h"
+#include "ddlog.h"
+
+#include <QByteArray>
+#include <QDateTime>
+#include <QFile>
+#include <QMutexLocker>
+#include <QRectF>
+#include <functional>
+
+#include <algorithm>
+
+#ifdef signals
+#pragma push_macro("signals")
+#undef signals
+#endif
+#ifdef slots
+#pragma push_macro("slots")
+#undef slots
+#endif
+
+extern "C" {
+#include <libgxps/gxps.h>
+#include <cairo.h>
+#include <cairo-pdf.h>
+#include <gio/gio.h>
+}
+
+#ifdef slots
+#pragma pop_macro("slots")
+#endif
+#ifdef signals
+#pragma pop_macro("signals")
+#endif
+
+namespace deepin_reader {
+namespace {
+
+template <typename T>
+class GObjectPtr
+{
+public:
+    GObjectPtr() = default;
+    explicit GObjectPtr(T *ptr)
+        : m_ptr(ptr)
+    {
+    }
+    ~GObjectPtr()
+    {
+        reset();
+    }
+
+    GObjectPtr(const GObjectPtr &) = delete;
+    GObjectPtr &operator=(const GObjectPtr &) = delete;
+
+    GObjectPtr(GObjectPtr &&other) noexcept
+    {
+        m_ptr = other.m_ptr;
+        other.m_ptr = nullptr;
+    }
+
+    GObjectPtr &operator=(GObjectPtr &&other) noexcept
+    {
+        if (this != &other) {
+            reset();
+            m_ptr = other.m_ptr;
+            other.m_ptr = nullptr;
+        }
+        return *this;
+    }
+
+    void reset(T *ptr = nullptr)
+    {
+        if (m_ptr) {
+            g_object_unref(m_ptr);
+        }
+        m_ptr = ptr;
+    }
+
+    T *release()
+    {
+        T *tmp = m_ptr;
+        m_ptr = nullptr;
+        return tmp;
+    }
+
+    T *get() const
+    {
+        return m_ptr;
+    }
+
+    explicit operator bool() const
+    {
+        return m_ptr != nullptr;
+    }
+
+    T *operator->() const
+    {
+        return m_ptr;
+    }
+
+private:
+    T *m_ptr = nullptr;
+};
+
+struct GErrorPtr
+{
+    GErrorPtr() = default;
+    ~GErrorPtr()
+    {
+        reset();
+    }
+
+    GError **outPtr()
+    {
+        reset();
+        return &m_error;
+    }
+
+    GError *get() const
+    {
+        return m_error;
+    }
+
+    void reset()
+    {
+        if (m_error) {
+            g_error_free(m_error);
+            m_error = nullptr;
+        }
+    }
+
+private:
+    GError *m_error = nullptr;
+};
+
+struct CairoSurfacePtr
+{
+    CairoSurfacePtr() = default;
+    explicit CairoSurfacePtr(cairo_surface_t *surface)
+        : m_surface(surface)
+    {
+    }
+    ~CairoSurfacePtr()
+    {
+        reset();
+    }
+
+    CairoSurfacePtr(const CairoSurfacePtr &) = delete;
+    CairoSurfacePtr &operator=(const CairoSurfacePtr &) = delete;
+
+    CairoSurfacePtr(CairoSurfacePtr &&other) noexcept
+    {
+        m_surface = other.m_surface;
+        other.m_surface = nullptr;
+    }
+
+    CairoSurfacePtr &operator=(CairoSurfacePtr &&other) noexcept
+    {
+        if (this != &other) {
+            reset();
+            m_surface = other.m_surface;
+            other.m_surface = nullptr;
+        }
+        return *this;
+    }
+
+    cairo_surface_t *get() const
+    {
+        return m_surface;
+    }
+
+    cairo_surface_t *operator->() const
+    {
+        return m_surface;
+    }
+
+    explicit operator bool() const
+    {
+        return m_surface != nullptr;
+    }
+
+    void reset(cairo_surface_t *surface = nullptr)
+    {
+        if (m_surface) {
+            cairo_surface_destroy(m_surface);
+        }
+        m_surface = surface;
+    }
+
+private:
+    cairo_surface_t *m_surface = nullptr;
+};
+
+struct CairoContextPtr
+{
+    CairoContextPtr() = default;
+    explicit CairoContextPtr(cairo_t *context)
+        : m_context(context)
+    {
+    }
+    ~CairoContextPtr()
+    {
+        reset();
+    }
+
+    CairoContextPtr(const CairoContextPtr &) = delete;
+    CairoContextPtr &operator=(const CairoContextPtr &) = delete;
+
+    CairoContextPtr(CairoContextPtr &&other) noexcept
+    {
+        m_context = other.m_context;
+        other.m_context = nullptr;
+    }
+
+    CairoContextPtr &operator=(CairoContextPtr &&other) noexcept
+    {
+        if (this != &other) {
+            reset();
+            m_context = other.m_context;
+            other.m_context = nullptr;
+        }
+        return *this;
+    }
+
+    cairo_t *get() const
+    {
+        return m_context;
+    }
+
+    cairo_t *operator->() const
+    {
+        return m_context;
+    }
+
+    explicit operator bool() const
+    {
+        return m_context != nullptr;
+    }
+
+    void reset(cairo_t *context = nullptr)
+    {
+        if (m_context) {
+            cairo_destroy(m_context);
+        }
+        m_context = context;
+    }
+
+private:
+    cairo_t *m_context = nullptr;
+};
+
+QString toQString(const gchar *value)
+{
+    if (!value) {
+        return QString();
+    }
+    return QString::fromUtf8(value);
+}
+
+QString normalizedString(const gchar *value, const QString &fallback = QString())
+{
+    QString result = toQString(value).trimmed();
+    return result.isEmpty() ? fallback : result;
+}
+
+QDateTime fromUnixTime(time_t value)
+{
+    if (value <= 0) {
+        return QDateTime();
+    }
+    return QDateTime::fromSecsSinceEpoch(static_cast<qint64>(value), Qt::UTC).toLocalTime();
+}
+
+void logGError(const QString &prefix, GError *error)
+{
+    if (!error) {
+        qCWarning(appLog) << prefix << "- Unknown error";
+        return;
+    }
+    qCWarning(appLog) << prefix << "- domain:" << error->domain << "code:" << error->code << "message:" << error->message;
+}
+
+} // namespace
+
+class XpsDocumentAdapter::Handle
+{
+public:
+    Handle(GXPSFile *fileHandle, GXPSDocument *documentHandle)
+        : file(fileHandle)
+        , document(documentHandle)
+    {
+    }
+
+    ~Handle()
+    {
+        if (document) {
+            g_object_unref(document);
+            document = nullptr;
+        }
+        if (file) {
+            g_object_unref(file);
+            file = nullptr;
+        }
+    }
+
+    Handle(const Handle &) = delete;
+    Handle &operator=(const Handle &) = delete;
+
+    Handle(Handle &&other) noexcept
+    {
+        file = other.file;
+        document = other.document;
+        other.file = nullptr;
+        other.document = nullptr;
+    }
+
+    Handle &operator=(Handle &&other) noexcept
+    {
+        if (this != &other) {
+            if (document) {
+                g_object_unref(document);
+            }
+            if (file) {
+                g_object_unref(file);
+            }
+            file = other.file;
+            document = other.document;
+            other.file = nullptr;
+            other.document = nullptr;
+        }
+        return *this;
+    }
+
+    GXPSFile *file = nullptr;
+    GXPSDocument *document = nullptr;
+};
+
+XpsDocumentAdapter::XpsDocumentAdapter(const QString &filePath,
+                                       GXPSFile *fileHandle,
+                                       GXPSDocument *documentHandle)
+    : m_filePath(filePath)
+    , m_handle(new Handle(fileHandle, documentHandle))
+{
+}
+
+XpsDocumentAdapter::~XpsDocumentAdapter() = default;
+
+XpsDocumentAdapter *XpsDocumentAdapter::loadDocument(const QString &filePath, Document::Error &error)
+{
+    error = Document::FileError;
+
+    if (filePath.isEmpty()) {
+        qCWarning(appLog) << "XPS load requested with empty file path";
+        return nullptr;
+    }
+
+    QByteArray utf8 = QFile::encodeName(filePath);
+    GObjectPtr<GFile> gioFile(g_file_new_for_path(utf8.constData()));
+    if (!gioFile) {
+        qCWarning(appLog) << "Failed to create GFile for" << filePath;
+        return nullptr;
+    }
+
+    GErrorPtr fileError;
+    GObjectPtr<GXPSFile> xpsFile(gxps_file_new(gioFile.get(), fileError.outPtr()));
+    if (!xpsFile) {
+        logGError(QStringLiteral("gxps_file_new failed"), fileError.get());
+        if (fileError.get() && g_error_matches(fileError.get(), GXPS_FILE_ERROR, GXPS_FILE_ERROR_INVALID)) {
+            error = Document::FileDamaged;
+        }
+        return nullptr;
+    }
+
+    guint documentCount = gxps_file_get_n_documents(xpsFile.get());
+    if (documentCount == 0) {
+        qCWarning(appLog) << "XPS file contains no documents" << filePath;
+        return nullptr;
+    }
+
+    GErrorPtr docError;
+    GObjectPtr<GXPSDocument> document(gxps_file_get_document(xpsFile.get(), 0, docError.outPtr()));
+    if (!document) {
+        logGError(QStringLiteral("gxps_file_get_document failed"), docError.get());
+        if (docError.get() && g_error_matches(docError.get(), GXPS_FILE_ERROR, GXPS_FILE_ERROR_INVALID)) {
+            error = Document::FileDamaged;
+        }
+        return nullptr;
+    }
+
+    auto *adapter = new XpsDocumentAdapter(filePath, xpsFile.release(), document.release());
+    adapter->ensurePageCache();
+    adapter->ensureProperties();
+    adapter->ensureOutline();
+
+    error = Document::NoError;
+    return adapter;
+}
+
+int XpsDocumentAdapter::pageCount() const
+{
+    ensurePageCache();
+    QMutexLocker lock(&m_mutex);
+    return m_pageSizes.size();
+}
+
+Page *XpsDocumentAdapter::page(int index) const
+{
+    if (index < 0 || index >= pageCount()) {
+        qCWarning(appLog) << "Requested XPS page out of range" << index;
+        return nullptr;
+    }
+    return new XpsPageAdapter(this, index);
+}
+
+QStringList XpsDocumentAdapter::saveFilter() const
+{
+    return QStringList() << QStringLiteral("XPS files (*.xps)")
+                         << QStringLiteral("Portable document format (*.pdf)");
+}
+
+bool XpsDocumentAdapter::save() const
+{
+    // XPS is a read-only format, cannot save in-place
+    // User should use saveAs() to export to PDF
+    qCInfo(appLog) << "XPS save() called: XPS is read-only, use saveAs() to export to PDF";
+    return false;
+}
+
+bool XpsDocumentAdapter::saveAs(const QString &filePath) const
+{
+    if (filePath.isEmpty()) {
+        qCWarning(appLog) << "XPS saveAs: empty file path";
+        return false;
+    }
+
+    // Determine format based on file extension
+    const QString lowerPath = filePath.toLower();
+    const bool isPdf = lowerPath.endsWith(QStringLiteral(".pdf"));
+    const bool isXps = lowerPath.endsWith(QStringLiteral(".xps"));
+
+    if (!isPdf && !isXps) {
+        qCWarning(appLog) << "XPS saveAs: unsupported file format, expected .xps or .pdf:" << filePath;
+        return false;
+    }
+
+    // Handle XPS format: copy source file if different, or return success if same
+    if (isXps) {
+        if (filePath == m_filePath) {
+            qCInfo(appLog) << "XPS saveAs: source and target are the same, no action needed";
+            return true;
+        }
+
+        // Try to copy the source XPS file
+        QFile sourceFile(m_filePath);
+        if (!sourceFile.exists()) {
+            qCWarning(appLog) << "XPS saveAs: source file does not exist:" << m_filePath;
+            return false;
+        }
+
+        // Remove target file if it exists
+        if (QFile::exists(filePath)) {
+            if (!QFile::remove(filePath)) {
+                qCWarning(appLog) << "XPS saveAs: failed to remove existing target file:" << filePath;
+                return false;
+            }
+        }
+
+        if (!sourceFile.copy(filePath)) {
+            qCWarning(appLog) << "XPS saveAs: failed to copy XPS file from" << m_filePath << "to" << filePath;
+            return false;
+        }
+
+        qCInfo(appLog) << "XPS saveAs: successfully copied XPS file to" << filePath;
+        return true;
+    }
+
+    // Handle PDF format: export XPS to PDF using Cairo
+    if (!m_handle || !m_handle->document) {
+        qCWarning(appLog) << "XPS saveAs: invalid document handle";
+        return false;
+    }
+
+    ensurePageCache();
+
+    QMutexLocker lock(&m_mutex);
+    const int pageCount = m_pageSizes.size();
+    if (pageCount <= 0) {
+        qCWarning(appLog) << "XPS saveAs: document has no pages";
+        return false;
+    }
+
+    qCInfo(appLog) << "Exporting XPS to PDF:" << filePath << "pages:" << pageCount;
+
+    // Convert QString to UTF-8 for Cairo
+    const QByteArray filePathUtf8 = filePath.toUtf8();
+    const char *cFilePath = filePathUtf8.constData();
+
+    // Get first page size to determine PDF dimensions (in points, 72 DPI)
+    const QSizeF firstPageSize = m_pageSizes.at(0);
+    if (firstPageSize.isEmpty() || firstPageSize.width() <= 0.0 || firstPageSize.height() <= 0.0) {
+        qCWarning(appLog) << "XPS saveAs: invalid first page size" << firstPageSize;
+        return false;
+    }
+
+    // Create PDF surface with first page dimensions (in points)
+    CairoSurfacePtr pdfSurface(cairo_pdf_surface_create(cFilePath,
+                                                         firstPageSize.width(),
+                                                         firstPageSize.height()));
+    if (!pdfSurface || cairo_surface_status(pdfSurface.get()) != CAIRO_STATUS_SUCCESS) {
+        qCWarning(appLog) << "XPS saveAs: failed to create PDF surface";
+        return false;
+    }
+
+    // Render all pages
+    for (int pageIndex = 0; pageIndex < pageCount; ++pageIndex) {
+        if (pageIndex > 0) {
+            // Set size for subsequent pages (they may have different sizes)
+            const QSizeF pageSize = m_pageSizes.at(pageIndex);
+            if (pageSize.isEmpty() || pageSize.width() <= 0.0 || pageSize.height() <= 0.0) {
+                qCWarning(appLog) << "XPS saveAs: invalid page size at index" << pageIndex << pageSize;
+                continue;
+            }
+            cairo_pdf_surface_set_size(pdfSurface.get(), pageSize.width(), pageSize.height());
+        }
+
+        // Get page object
+        GErrorPtr pageError;
+        GObjectPtr<GXPSPage> page(gxps_document_get_page(m_handle->document,
+                                                         static_cast<guint>(pageIndex),
+                                                         pageError.outPtr()));
+        if (!page) {
+            logGError(QStringLiteral("gxps_document_get_page failed for page %1").arg(pageIndex),
+                      pageError.get());
+            continue;
+        }
+
+        const QSizeF logicalSize = m_pageSizes.at(pageIndex);
+        if (logicalSize.isEmpty() || logicalSize.width() <= 0.0 || logicalSize.height() <= 0.0) {
+            qCWarning(appLog) << "XPS saveAs: invalid logical size for page" << pageIndex << logicalSize;
+            continue;
+        }
+
+        // Create context for this page
+        CairoContextPtr context(cairo_create(pdfSurface.get()));
+        if (!context || cairo_status(context.get()) != CAIRO_STATUS_SUCCESS) {
+            qCWarning(appLog) << "XPS saveAs: failed to create Cairo context for page" << pageIndex;
+            continue;
+        }
+
+        // Set white background
+        cairo_set_source_rgb(context.get(), 1.0, 1.0, 1.0);
+        cairo_paint(context.get());
+
+        // Set identity matrix (1:1 mapping from XPS logical units to PDF points)
+        cairo_matrix_t matrix;
+        cairo_matrix_init_identity(&matrix);
+        cairo_set_matrix(context.get(), &matrix);
+
+        // Enable best quality rendering
+        cairo_set_antialias(context.get(), CAIRO_ANTIALIAS_BEST);
+
+        // Render XPS page to PDF
+        GErrorPtr renderError;
+        if (!gxps_page_render(page.get(), context.get(), renderError.outPtr())) {
+            logGError(QStringLiteral("gxps_page_render failed for page %1").arg(pageIndex),
+                      renderError.get());
+            // Continue with next page even if this one fails
+            continue;
+        }
+
+        // Show page (adds page to PDF)
+        cairo_show_page(context.get());
+        cairo_surface_flush(pdfSurface.get());
+
+        qCDebug(appLog) << "XPS saveAs: rendered page" << pageIndex << "/" << pageCount;
+    }
+
+    // Finalize PDF
+    cairo_surface_finish(pdfSurface.get());
+    cairo_status_t status = cairo_surface_status(pdfSurface.get());
+    if (status != CAIRO_STATUS_SUCCESS) {
+        qCWarning(appLog) << "XPS saveAs: PDF surface error:" << cairo_status_to_string(status);
+        return false;
+    }
+
+    qCInfo(appLog) << "XPS saveAs: successfully exported" << pageCount << "pages to PDF";
+    return true;
+}
+
+Outline XpsDocumentAdapter::outline() const
+{
+    ensureOutline();
+    QMutexLocker lock(&m_mutex);
+    return m_outline;
+}
+
+Properties XpsDocumentAdapter::properties() const
+{
+    ensureProperties();
+    QMutexLocker lock(&m_mutex);
+    return m_properties;
+}
+
+QSizeF XpsDocumentAdapter::pageSize(int pageIndex) const
+{
+    ensurePageCache();
+    QMutexLocker lock(&m_mutex);
+    if (pageIndex < 0 || pageIndex >= m_pageSizes.size()) {
+        return QSizeF();
+    }
+    return m_pageSizes.at(pageIndex);
+}
+
+QImage XpsDocumentAdapter::renderPage(int pageIndex, int width, int height, const QRect &slice) const
+{
+    if (!m_handle || !m_handle->document) {
+        qCWarning(appLog) << "Attempting to render XPS page with invalid document handle";
+        return QImage();
+    }
+
+    if (width <= 0 || height <= 0) {
+        qCWarning(appLog) << "Invalid render target size" << width << height;
+        return QImage();
+    }
+
+    ensurePageCache();
+
+    QSizeF logicalSize;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (pageIndex < 0 || pageIndex >= m_pageSizes.size()) {
+            qCWarning(appLog) << "Render request out of bounds" << pageIndex;
+            return QImage();
+        }
+        logicalSize = m_pageSizes.at(pageIndex);
+    }
+
+    qCDebug(appLog) << "Rendering XPS page" << pageIndex << "@" << width << "x" << height << "slice" << slice;
+
+    GErrorPtr pageError;
+    GObjectPtr<GXPSPage> page(gxps_document_get_page(m_handle->document, static_cast<guint>(pageIndex), pageError.outPtr()));
+    if (!page) {
+        logGError(QStringLiteral("gxps_document_get_page failed"), pageError.get());
+        return QImage();
+    }
+    if (logicalSize.isEmpty() || logicalSize.width() <= 0.0 || logicalSize.height() <= 0.0) {
+        qCWarning(appLog) << "Invalid logical size for XPS page" << logicalSize;
+        return QImage();
+    }
+
+    const double pixelsPerDocX = static_cast<double>(width) / logicalSize.width();
+    const double pixelsPerDocY = static_cast<double>(height) / logicalSize.height();
+
+    if (pixelsPerDocX <= 0.0 || pixelsPerDocY <= 0.0) {
+        qCWarning(appLog) << "Invalid pixels-per-document ratio" << pixelsPerDocX << pixelsPerDocY;
+        return QImage();
+    }
+
+    const QRect fullSlice(0, 0, width, height);
+    const QRect requestedSlice = slice.isValid() ? slice : fullSlice;
+
+    if (requestedSlice.width() <= 0 || requestedSlice.height() <= 0) {
+        qCWarning(appLog) << "Requested slice has non-positive size" << requestedSlice;
+        return QImage();
+    }
+
+    const QSize targetSize(requestedSlice.size());
+
+    QImage image(targetSize.width(), targetSize.height(), QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull()) {
+        qCWarning(appLog) << "Failed to allocate image for XPS render";
+        return image;
+    }
+    image.fill(Qt::transparent);
+
+    CairoSurfacePtr surface(cairo_image_surface_create_for_data(image.bits(),
+                                                               CAIRO_FORMAT_ARGB32,
+                                                               targetSize.width(),
+                                                               targetSize.height(),
+                                                               image.bytesPerLine()));
+    if (!surface || cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS) {
+        qCWarning(appLog) << "Failed to create Cairo surface for XPS render";
+        return QImage();
+    }
+
+    CairoContextPtr context(cairo_create(surface.get()));
+    if (!context || cairo_status(context.get()) != CAIRO_STATUS_SUCCESS) {
+        qCWarning(appLog) << "Failed to create Cairo context for XPS render";
+        return QImage();
+    }
+
+    cairo_set_source_rgb(context.get(), 1.0, 1.0, 1.0);
+    cairo_paint(context.get());
+
+    // Scaling via cairo_matrix keeps high-DPI print requests accurate, no device-scale override needed here.
+    cairo_matrix_t matrix;
+    cairo_set_antialias(context.get(), CAIRO_ANTIALIAS_BEST);
+
+    const double translateX = slice.isValid() ? -static_cast<double>(requestedSlice.left()) : 0.0;
+    const double translateY = slice.isValid() ? -static_cast<double>(requestedSlice.top()) : 0.0;
+
+    cairo_matrix_init(&matrix,
+                      pixelsPerDocX, 0.0,
+                      0.0, pixelsPerDocY,
+                      translateX,
+                      translateY);
+    cairo_set_matrix(context.get(), &matrix);
+
+    GErrorPtr renderError;
+    if (!gxps_page_render(page.get(), context.get(), renderError.outPtr())) {
+        logGError(QStringLiteral("gxps_page_render failed"), renderError.get());
+        return QImage();
+    }
+
+    cairo_surface_flush(surface.get());
+    return image.convertToFormat(QImage::Format_RGB32);
+}
+
+void XpsDocumentAdapter::ensurePageCache() const
+{
+    if (!m_handle || !m_handle->document) {
+        return;
+    }
+    if (!m_pageSizes.isEmpty()) {
+        return;
+    }
+
+    QMutexLocker lock(&m_mutex);
+    if (!m_pageSizes.isEmpty()) {
+        return;
+    }
+
+    const guint count = gxps_document_get_n_pages(m_handle->document);
+    m_pageSizes.resize(static_cast<int>(count));
+
+    for (guint i = 0; i < count; ++i) {
+        gdouble width = 0.0;
+        gdouble height = 0.0;
+        gboolean gotSize = gxps_document_get_page_size(m_handle->document, i, &width, &height);
+
+        if (!gotSize || width <= 0.0 || height <= 0.0) {
+            GErrorPtr pageError;
+            GObjectPtr<GXPSPage> page(gxps_document_get_page(m_handle->document, i, pageError.outPtr()));
+            if (page) {
+                gdouble fallbackWidth = 0.0;
+                gdouble fallbackHeight = 0.0;
+                gxps_page_get_size(page.get(), &fallbackWidth, &fallbackHeight);
+                if (fallbackWidth > 0.0 && fallbackHeight > 0.0) {
+                    width = fallbackWidth;
+                    height = fallbackHeight;
+                } else {
+                    width = 612.0;
+                    height = 792.0;
+                }
+            } else {
+                width = 612.0;
+                height = 792.0;
+            }
+        }
+
+        m_pageSizes[static_cast<int>(i)] = QSizeF(width, height);
+    }
+
+    qCInfo(appLog) << "XPS document page cache initialized, pages:" << count;
+}
+
+void XpsDocumentAdapter::ensureProperties() const
+{
+    if (!m_handle || !m_handle->file) {
+        return;
+    }
+    if (!m_properties.isEmpty()) {
+        return;
+    }
+
+    ensurePageCache();
+
+    QMutexLocker lock(&m_mutex);
+    if (!m_properties.isEmpty()) {
+        return;
+    }
+
+    Properties props;
+    props["Format"] = QStringLiteral("XPS");
+    props["FilePath"] = m_filePath;
+
+    GErrorPtr coreError;
+    GObjectPtr<GXPSCoreProperties> core(gxps_file_get_core_properties(m_handle->file, coreError.outPtr()));
+    if (!core) {
+        if (coreError.get()) {
+            logGError(QStringLiteral("gxps_file_get_core_properties failed"), coreError.get());
+        }
+    } else {
+        const auto setPropertyWithLog = [&](const QString &key, const gchar *value) {
+            const QString text = normalizedString(value);
+            if (text.isEmpty()) {
+                qCDebug(appLog) << "XPS metadata missing or empty field:" << key;
+            }
+            props[key] = text;
+        };
+
+        setPropertyWithLog(QStringLiteral("Title"), gxps_core_properties_get_title(core.get()));
+        setPropertyWithLog(QStringLiteral("Author"), gxps_core_properties_get_creator(core.get()));
+        setPropertyWithLog(QStringLiteral("Subject"), gxps_core_properties_get_subject(core.get()));
+        setPropertyWithLog(QStringLiteral("KeyWords"), gxps_core_properties_get_keywords(core.get()));
+        setPropertyWithLog(QStringLiteral("Description"), gxps_core_properties_get_description(core.get()));
+        setPropertyWithLog(QStringLiteral("Version"), gxps_core_properties_get_version(core.get()));
+        setPropertyWithLog(QStringLiteral("Creator"), gxps_core_properties_get_last_modified_by(core.get()));
+
+        const QDateTime created = fromUnixTime(gxps_core_properties_get_created(core.get()));
+        const QDateTime modified = fromUnixTime(gxps_core_properties_get_modified(core.get()));
+        if (created.isValid()) {
+            props["CreationDate"] = created;
+        } else {
+            qCDebug(appLog) << "XPS metadata CreationDate missing or invalid";
+        }
+        if (modified.isValid()) {
+            props["ModificationDate"] = modified;
+        } else {
+            qCDebug(appLog) << "XPS metadata ModificationDate missing or invalid";
+        }
+    }
+
+    props["PageCount"] = m_pageSizes.size();
+    const QSizeF firstSize = m_pageSizes.isEmpty() ? QSizeF() : m_pageSizes.first();
+    props["Width"] = firstSize.width();
+    props["Height"] = firstSize.height();
+
+    m_properties = props;
+}
+
+void XpsDocumentAdapter::ensureOutline() const
+{
+    if (!m_handle || !m_handle->document) {
+        return;
+    }
+    if (!m_outline.isEmpty()) {
+        return;
+    }
+
+    QMutexLocker lock(&m_mutex);
+    if (!m_outline.isEmpty()) {
+        return;
+    }
+
+    GObjectPtr<GXPSDocumentStructure> structure(gxps_document_get_structure(m_handle->document));
+    if (!structure) {
+        qCDebug(appLog) << "XPS document has no structure section, outline unavailable";
+        return;
+    }
+
+    if (!gxps_document_structure_has_outline(structure.get())) {
+        qCDebug(appLog) << "XPS document structure present but outline is empty";
+        return;
+    }
+
+    GXPSOutlineIter iter;
+    if (!gxps_document_structure_outline_iter_init(&iter, structure.get())) {
+        return;
+    }
+
+    auto anchorPointFor = [&](int pageIdx, const gchar *anchor) -> QPointF {
+        if (pageIdx < 0 || !anchor) {
+            return QPointF();
+        }
+
+        GErrorPtr pageError;
+        GObjectPtr<GXPSPage> page(gxps_document_get_page(m_handle->document, static_cast<guint>(pageIdx), pageError.outPtr()));
+        if (!page) {
+            logGError(QStringLiteral("gxps_document_get_page failed while building outline"), pageError.get());
+            return QPointF();
+        }
+
+        GErrorPtr anchorError;
+        cairo_rectangle_t area {0, 0, 0, 0};
+        if (!gxps_page_get_anchor_destination(page.get(), anchor, &area, anchorError.outPtr())) {
+            if (anchorError.get()) {
+                logGError(QStringLiteral("gxps_page_get_anchor_destination failed while building outline"), anchorError.get());
+            }
+            return QPointF();
+        }
+        return QPointF(area.x, area.y);
+    };
+
+    std::function<Section(GXPSOutlineIter *)> buildSection = [&](GXPSOutlineIter *it) -> Section {
+        Section section;
+        section.title = toQString(gxps_outline_iter_get_description(it));
+
+        GXPSLinkTarget *target = gxps_outline_iter_get_target(it);
+        if (target && gxps_link_target_is_internal(target)) {
+            const gchar *anchor = gxps_link_target_get_anchor(target);
+            if (anchor) {
+                const int pageIdx = gxps_document_get_page_for_anchor(m_handle->document, anchor);
+                section.nIndex = pageIdx;
+                section.offsetPointF = anchorPointFor(pageIdx, anchor);
+            }
+        }
+
+        GXPSOutlineIter childIter;
+        if (gxps_outline_iter_children(&childIter, it)) {
+            do {
+                section.children.append(buildSection(&childIter));
+            } while (gxps_outline_iter_next(&childIter));
+        }
+
+        return section;
+    };
+
+    Outline result;
+    do {
+        result.append(buildSection(&iter));
+    } while (gxps_outline_iter_next(&iter));
+
+    if (result.isEmpty()) {
+        qCDebug(appLog) << "XPS outline iterator completed but no sections were generated";
+    }
+
+    m_outline = result;
+}
+
+XpsPageAdapter::XpsPageAdapter(const XpsDocumentAdapter *document, int pageIndex)
+    : m_document(document)
+    , m_pageIndex(pageIndex)
+{
+}
+
+XpsPageAdapter::~XpsPageAdapter() = default;
+
+QSizeF XpsPageAdapter::sizeF() const
+{
+    if (!m_document) {
+        return QSizeF();
+    }
+    return m_document->pageSize(m_pageIndex);
+}
+
+QImage XpsPageAdapter::render(int width, int height, const QRect &slice) const
+{
+    if (!m_document) {
+        return QImage();
+    }
+    return m_document->renderPage(m_pageIndex, width, height, slice);
+}
+
+Link XpsPageAdapter::getLinkAtPoint(const QPointF &point)
+{
+    Q_UNUSED(point)
+    return Link();
+}
+
+QString XpsPageAdapter::text(const QRectF &rect) const
+{
+    if (!m_document || rect.isEmpty()) {
+        return QString();
+    }
+
+    // 直接调用文本提取器，避免通过非const的words()方法
+    QString filePath = m_document->filePath();
+    if (filePath.isEmpty()) {
+        qCWarning(appLog) << "XpsPageAdapter::text() - Empty file path";
+        return QString();
+    }
+
+    QList<Word> allWords = XpsTextExtractor::extractWords(filePath, m_pageIndex);
+    if (allWords.isEmpty()) {
+        return QString();
+    }
+
+    // 筛选在矩形区域内的words并按位置排序
+    QList<Word> selectedWords;
+    for (const Word &word : allWords) {
+        if (rect.intersects(word.boundingBox)) {
+            selectedWords.append(word);
+        }
+    }
+
+    if (selectedWords.isEmpty()) {
+        return QString();
+    }
+
+    // 按位置排序（从上到下，从左到右）
+    std::sort(selectedWords.begin(), selectedWords.end(), [](const Word &a, const Word &b) {
+        const double yThreshold = 5.0; // Y坐标容差
+        if (qAbs(a.boundingBox.y() - b.boundingBox.y()) > yThreshold) {
+            return a.boundingBox.y() < b.boundingBox.y();
+        }
+        return a.boundingBox.x() < b.boundingBox.x();
+    });
+
+    // 拼接文本，处理换行
+    QStringList textParts;
+    qreal lastY = selectedWords.first().boundingBox.y();
+    const double yThreshold = 5.0;
+
+    for (const Word &word : selectedWords) {
+        // 检测换行
+        if (qAbs(word.boundingBox.y() - lastY) > yThreshold && !textParts.isEmpty()) {
+            // 如果Y坐标变化较大，可能是新行，添加换行符（可选）
+            // 这里先不添加，让调用者处理
+        }
+        textParts.append(word.text);
+        lastY = word.boundingBox.y();
+    }
+
+    QString result = textParts.join(QStringLiteral(" "));
+
+    qCDebug(appLog) << "XpsPageAdapter::text() - Extracted text for rect" << rect << ":" << result;
+
+    return result.simplified();
+}
+
+QVector<PageSection> XpsPageAdapter::search(const QString &text, bool matchCase, bool wholeWords) const
+{
+    qCDebug(appLog) << "XpsPageAdapter::search() - Searching for text:" << text 
+                    << "matchCase:" << matchCase << "wholeWords:" << wholeWords;
+
+    if (text.isEmpty()) {
+        qCDebug(appLog) << "XpsPageAdapter::search() - Empty search text";
+        return QVector<PageSection>();
+    }
+
+    if (!m_document) {
+        qCWarning(appLog) << "XpsPageAdapter::search() - Invalid document";
+        return QVector<PageSection>();
+    }
+
+    // 获取文档文件路径
+    QString filePath = m_document->filePath();
+    if (filePath.isEmpty()) {
+        qCWarning(appLog) << "XpsPageAdapter::search() - Empty file path";
+        return QVector<PageSection>();
+    }
+
+    // 提取页面所有文字（复用 TASK008 的实现）
+    QList<Word> allWords = XpsTextExtractor::extractWords(filePath, m_pageIndex);
+    if (allWords.isEmpty()) {
+        qCDebug(appLog) << "XpsPageAdapter::search() - No words found on page";
+        return QVector<PageSection>();
+    }
+
+    // 文本匹配策略
+    Qt::CaseSensitivity caseSensitivity = matchCase ? Qt::CaseSensitive : Qt::CaseInsensitive;
+
+    // 构建完整的页面文本字符串用于搜索（考虑跨多个 Word 的情况）
+    QString pageText;
+    for (const Word &word : allWords) {
+        pageText.append(word.text);
+    }
+
+    QVector<PageSection> sections;
+    int searchIndex = 0;
+
+    // 在页面文本中查找所有匹配位置
+    while ((searchIndex = pageText.indexOf(text, searchIndex, caseSensitivity)) != -1) {
+        const int matchStart = searchIndex;
+        const int matchEnd = searchIndex + text.length();
+
+        // 检查整词匹配要求
+        if (wholeWords) {
+            const bool wordBegins = (matchStart == 0) || 
+                                    !pageText.at(matchStart - 1).isLetterOrNumber();
+            const bool wordEnds = (matchEnd >= pageText.length()) || 
+                                  (matchEnd < pageText.length() && !pageText.at(matchEnd).isLetterOrNumber());
+            if (!wordBegins || !wordEnds) {
+                searchIndex = matchEnd;
+                continue;
+            }
+        }
+
+        // 计算匹配文本在 words 中的位置范围
+        int charCount = 0;
+        int startWordIndex = -1;
+        int endWordIndex = -1;
+
+        for (int i = 0; i < allWords.size(); ++i) {
+            const int wordLength = allWords[i].text.length();
+            const int wordStart = charCount;
+            const int wordEnd = charCount + wordLength;
+
+            // 找到包含 matchStart 的 word
+            if (startWordIndex == -1 && wordStart <= matchStart && matchStart < wordEnd) {
+                startWordIndex = i;
+            }
+            // 找到包含 matchEnd-1 的 word（matchEnd 是开区间）
+            if (wordStart <= matchEnd - 1 && matchEnd - 1 < wordEnd) {
+                endWordIndex = i;
+                break;
+            }
+            charCount += wordLength;
+        }
+
+        if (startWordIndex == -1 || endWordIndex == -1) {
+            searchIndex = matchEnd;
+            continue;
+        }
+
+        // 合并匹配的 words 的边界框
+        QRectF matchRect;
+        for (int i = startWordIndex; i <= endWordIndex; ++i) {
+            if (matchRect.isEmpty()) {
+                matchRect = allWords[i].boundingBox;
+            } else {
+                matchRect = matchRect.united(allWords[i].boundingBox);
+            }
+        }
+
+        if (!matchRect.isEmpty()) {
+            // 创建 PageSection（每个匹配创建一个 PageLine）
+            PageSection section;
+            section.append(PageLine{QString(), matchRect});
+            sections.append(section);
+        }
+
+        // 移动到下一个可能的匹配位置
+        searchIndex = matchEnd;
+    }
+
+    qCDebug(appLog) << "XpsPageAdapter::search() - Found" << sections.size() << "matches";
+    return sections;
+}
+
+QList<Annotation *> XpsPageAdapter::annotations() const
+{
+    return {};
+}
+
+QList<Word> XpsPageAdapter::words()
+{
+    if (!m_document) {
+        qCWarning(appLog) << "XpsPageAdapter::words() - Invalid document";
+        return {};
+    }
+
+    // 获取文档文件路径
+    QString filePath = m_document->filePath();
+    if (filePath.isEmpty()) {
+        qCWarning(appLog) << "XpsPageAdapter::words() - Empty file path";
+        return {};
+    }
+
+    // 使用文本提取器提取文本
+    return XpsTextExtractor::extractWords(filePath, m_pageIndex);
+}
+
+} // namespace deepin_reader
+
