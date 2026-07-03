@@ -1,5 +1,5 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2019 ~ 2026 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -804,9 +804,9 @@ QString DocSheet::filter()
         if (m_renderer && m_renderer->opened()) {
             // Try to get filters from document if available
             // For now, return both XPS and PDF filters
-            return QStringLiteral("XPS files (*.xps);;Portable document format (*.pdf)");
+            return QStringLiteral("XPS Files (*.xps);;Pdf Files (*.pdf)");
         }
-        return QStringLiteral("XPS files (*.xps);;Portable document format (*.pdf)");
+        return QStringLiteral("XPS Files (*.xps);;Pdf Files (*.pdf)");
     }
 #endif
 
@@ -868,6 +868,9 @@ QString DocSheet::openedFilePath()
     // qCDebug(appLog) << "openedFilePath";
     if (Dr::DOCX == fileType())
         return convertedFileDir() + "/temp.pdf";
+
+    if (Dr::DJVU == fileType() && Dr::isNetworkPath(filePath()))
+        return convertedFileDir() + "/temp.djvu";
 
     return filePath();
 }
@@ -1275,7 +1278,7 @@ void DocSheet::onOpened(deepin_reader::Document::Error error)
 
 bool DocSheet::isFullScreen()
 {
-    qCDebug(appLog) << "isFullScreen";
+    // qCDebug(appLog) << "isFullScreen";
     CentralDocPage *doc = static_cast<CentralDocPage *>(parent());
 
     if (nullptr == doc)
@@ -1580,9 +1583,14 @@ void DocSheet::setAlive(bool alive)
 
         int index = g_uuidList.indexOf(m_uuid);
 
-        g_sheetList.removeAt(index);
-
-        g_uuidList.removeAt(index);
+        if (index >= 0) {
+            if (index < g_sheetList.size())
+                g_sheetList.removeAt(index);
+            g_uuidList.removeAt(index);
+        } else {
+            // 列表不同步时，尝试从 g_sheetList 中直接移除 this
+            g_sheetList.removeOne(this);
+        }
 
         m_uuid.clear();
 
@@ -1684,23 +1692,28 @@ void DocSheet::onPopPrintDialog()
 
     //pdf若是Linearized类型的，需要另存为Normal类型，然后打印
     if (Dr::PDF == fileType()) {
-        deepin_reader::Document *document = nullptr;
-        deepin_reader::Document::Error error = deepin_reader::Document ::NoError;
-        document = DocumentFactory::getDocument(m_fileType,
-                                                m_filePath,
-                                                convertedFileDir(),
-                                                m_password, nullptr, error);
-
         QString pdfPath = filePath();
-        qCInfo(appLog)  << pdfPath << "isLinearized:" << document->properties().value("Linearized").toBool();
-        if (document->properties().value("Linearized").toBool()) {
-            pdfPath = QTemporaryDir("LinearizedConverted.pdf").path();
-            if (!m_renderer->saveAs(pdfPath)) {
-                qCInfo(appLog) << "saveAs failed when print Linearized pdf";
-                return;
+        // 使用 pdftocairo 转换为嵌入矢量pdf，解决打印乱码和模糊问题
+        QString tmpPdfPath = convertedFileDir() + "/pdftocairoPrint.pdf";
+        QProcess process;
+        process.start("pdftocairo", QStringList() << "-pdf" << pdfPath << tmpPdfPath);
+        bool converted = process.waitForFinished(5 * 60 * 1000) && process.exitCode() == 0;
+        if (converted) {
+            // pdftocairo 有时 exit code 为 0 但输出 PDF 结构不完整，验证关键标记是否存在
+            QFile outFile(tmpPdfPath);
+            if (outFile.open(QIODevice::ReadOnly)) {
+                outFile.seek(qMax(0LL, outFile.size() - 1024));
+                const QByteArray tail = outFile.readAll();
+                outFile.close();
+                if (!tail.contains("startxref") || !tail.contains("%%EOF"))
+                    converted = false;
+            } else {
+                converted = false;
             }
         }
-        preview->setPrintFromPath(pdfPath);
+        if (!converted)
+            qCWarning(appLog) << "pdftocairo conversion failed or produced invalid PDF, using original";
+        preview->setPrintFromPath(converted ? tmpPdfPath : pdfPath);
     }
     connect(preview, QOverload<DPrinter *, const QVector<int> &>::of(&DPrintPreviewDialog::paintRequested), this, QOverload<DPrinter *, const QVector<int> &>::of(&DocSheet::onPrintRequested));
 #else

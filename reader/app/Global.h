@@ -1,5 +1,5 @@
 // Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -9,6 +9,7 @@
 #include "DebugTimeManager.h"
 
 #include <QString>
+#include <QStorageInfo>
 
 namespace Dr {
 
@@ -45,6 +46,7 @@ enum FileType {
 #endif
 };
 FileType fileType(const QString &filePath);
+bool isNetworkPath(const QString &filePath);
 
 /**
  * @brief The Rotation enum
@@ -145,5 +147,7 @@ const QString key_ctrl_shift_s     = "Ctrl+Shift+S";    // 另存为
 const QString key_ctrl_shift_slash = "Ctrl+Shift+/";
 const QString key_ctrl_home        = "Ctrl+Home";       //第一页
 const QString key_ctrl_end         = "Ctrl+End";        //最后一页
+
+const int key_scroll_step_pixels = 20;                  // 上下键滚动步长（像素）
 }
 #endif // GLOBAL_H

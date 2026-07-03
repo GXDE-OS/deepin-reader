@@ -1,5 +1,5 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2019 ~ 2026 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -27,6 +27,7 @@
 #include <DGuiApplicationHelper>
 
 #include <QGraphicsItem>
+#include <QKeyEvent>
 #include <QScrollBar>
 #include <QTimer>
 #include <QApplication>
@@ -47,6 +48,7 @@ DWIDGET_USE_NAMESPACE
 
 #define REPEAT_MOVE_DELAY 500
 const qreal deltaManhattanLength = 12.0;
+
 SheetBrowser::SheetBrowser(DocSheet *parent) : DGraphicsView(parent), m_sheet(parent)
 {
     qCDebug(appLog) << "SheetBrowser constructor started";
@@ -56,6 +58,8 @@ SheetBrowser::SheetBrowser(DocSheet *parent) : DGraphicsView(parent), m_sheet(pa
     // qCDebug(appLog) << "Graphics scene created";
 
     setFrameShape(QFrame::NoFrame);
+
+    scene()->setItemIndexMethod(QGraphicsScene::NoIndex);  // 禁用场景索引（对于静态场景更高效）
 
     setContextMenuPolicy(Qt::CustomContextMenu);
 
@@ -752,6 +756,32 @@ void SheetBrowser::jumpToHighLight(deepin_reader::Annotation *annotation, const 
     qCDebug(appLog) << "SheetBrowser::jumpToHighLight() - Jump to high light completed";
 }
 
+void SheetBrowser::keyPressEvent(QKeyEvent *event)
+{
+    if (m_sheet) {
+        if (event->key() == Qt::Key_PageDown && !event->isAutoRepeat()) {
+            m_sheet->jumpToNextPage();
+            return;
+        }
+        if (event->key() == Qt::Key_PageUp && !event->isAutoRepeat()) {
+            m_sheet->jumpToPrevPage();
+            return;
+        }
+
+        if (event->key() == Qt::Key_Down) {
+            event->accept();
+            verticalScrollBar()->setValue(verticalScrollBar()->value() + Dr::key_scroll_step_pixels);
+            return;
+        }
+        if (event->key() == Qt::Key_Up) {
+            event->accept();
+            verticalScrollBar()->setValue(verticalScrollBar()->value() - Dr::key_scroll_step_pixels);
+            return;
+        }
+    }
+    DGraphicsView::keyPressEvent(event);
+}
+
 void SheetBrowser::wheelEvent(QWheelEvent *event)
 {
     // qCDebug(appLog) << "SheetBrowser::wheelEvent() - Starting wheel event";
@@ -891,8 +921,6 @@ void SheetBrowser::deform(SheetOperation &operation)
     qCDebug(appLog) << "Deforming view with scale factor:" << operation.scaleFactor
              << "mode:" << operation.scaleMode << "rotation:" << operation.rotation;
              
-    m_lastScaleFactor = operation.scaleFactor;
-
     const qreal safeMaxWidth = qFuzzyIsNull(m_maxWidth) ? 1.0 : m_maxWidth;
     const qreal safeMaxHeight = qFuzzyIsNull(m_maxHeight) ? (qFuzzyIsNull(m_maxWidth) ? 1.0 : m_maxWidth) : m_maxHeight;
 
@@ -934,6 +962,8 @@ void SheetBrowser::deform(SheetOperation &operation)
             operation.scaleMode = Dr::ScaleFactorMode;
         break;
     }
+
+    m_lastScaleFactor = operation.scaleFactor;
 
     int page = operation.currentPage;
     //进行render 并算出最宽的一行
@@ -1639,6 +1669,9 @@ int SheetBrowser::currentPage()
 int SheetBrowser::currentScrollValueForPage()
 {
     // qCDebug(appLog) << "SheetBrowser::currentScrollValueForPage() - Current scroll value for page";
+    if (m_items.isEmpty())
+        return 1;
+
     int value = verticalScrollBar()->value();
 
     int index = 0;
@@ -1662,7 +1695,12 @@ int SheetBrowser::currentScrollValueForPage()
         }
     }
 
-    return index + 1;
+    // 确保页码在有效范围内 [1, m_items.count()]
+    int page = index + 1;
+    if (page < 1) page = 1;
+    if (page > m_items.count()) page = m_items.count();
+
+    return page;
 }
 
 void SheetBrowser::setCurrentPage(int page)

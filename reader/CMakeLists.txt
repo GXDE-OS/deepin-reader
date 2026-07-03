@@ -3,6 +3,11 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBJPEG REQUIRED libjpeg)
 pkg_check_modules(DDJVU REQUIRED ddjvuapi)
 
+# Use pdfium in system default
+if (NOT USE_PDFIUM_BUNDLE)
+    pkg_check_modules(Deepin-pdfium REQUIRED IMPORTED_TARGET deepin-pdfium)
+endif()
+
 if (XPS_SUPPORT_ENABLED)
     pkg_check_modules(XPS_DEPS REQUIRED libgxps cairo glib-2.0 gobject-2.0 freetype2)
 endif()
@@ -81,6 +86,15 @@ target_include_directories(deepin-reader PUBLIC
     $<$<BOOL:${XPS_SUPPORT_ENABLED}>:${XPS_DEPS_INCLUDE_DIRS}>
 )
 
+# 使用DTK变量包含目录
+if(NOT QT_VERSION_MAJOR MATCHES 6)
+    target_include_directories(deepin-reader PUBLIC
+        ${DtkWidget_INCLUDE_DIRS}
+        ${DtkGui_INCLUDE_DIRS}
+        ${DtkCore_INCLUDE_DIRS}
+    )
+endif()
+
 if (NOT APP_VERSION)
     set(APP_VERSION "1.0.0")
 endif()
@@ -98,7 +112,6 @@ endif()
 # 添加资源文件
 set(READER_LINK_LIBS
     ${LINK_LIBS}
-    deepin-pdfium-reader
     ${LIBJPEG_LIBRARIES}
     ${DDJVU_LIBRARIES}
 )
@@ -119,10 +132,22 @@ else()
         dl
         pthread
     )
+    # 使用DTK变量而不是目标
+    target_link_libraries(deepin-reader PRIVATE
+        ${DtkWidget_LIBRARIES}
+        ${DtkGui_LIBRARIES}
+        ${DtkCore_LIBRARIES}
+    )
 
     qt5_add_resources(reader_RESOURCES
         ${CMAKE_SOURCE_DIR}/resources/resources.qrc
     )
+endif()
+
+if (USE_PDFIUM_BUNDLE)
+    target_link_libraries(deepin-reader PRIVATE deepin-pdfium-reader)
+else()
+    target_link_libraries(deepin-reader PRIVATE PkgConfig::Deepin-pdfium)
 endif()
 
 target_sources(deepin-reader PRIVATE ${reader_RESOURCES})
@@ -169,7 +194,9 @@ if(DEFINED DSG_DATA_DIR)
     if (DTK_VERSION_MAJOR EQUAL "6")
         dtk_add_config_meta_files(APPID ${DCONFIG_APPID} FILES ${DCONFIG_FILES})
     else()
-        dconfig_meta_files(APPID ${DCONFIG_APPID} FILES ${DCONFIG_FILES})
+        # V25 mips环境下无法dconfig_meta_files 临时替换
+        # dconfig_meta_files(APPID ${DCONFIG_APPID} FILES ${DCONFIG_FILES})
+        install(FILES ${DCONFIG_FILES} DESTINATION ${CMAKE_INSTALL_PREFIX}/share/dsg/configs/${DCONFIG_APPID})
     endif()
     message("-- DConfig is supported by DTK")
 else()

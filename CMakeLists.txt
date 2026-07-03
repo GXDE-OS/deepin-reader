@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.13)
 
 # 项目基本信息
 project(deepin-reader
@@ -6,6 +6,20 @@ project(deepin-reader
     DESCRIPTION "Deepin Document Viewer"
     LANGUAGES CXX C
 )
+
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    message("Enable build hardening.")
+
+    set(CMAKE_VERBOSE_MAKEFILE ON)
+
+    set(HARDENING_FLAGS "-Wdate-time -D_FORTIFY_SOURCE=2 -g -O2 -ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -fstack-protector-strong -fstack-clash-protection -Wformat -Werror=format-security")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${HARDENING_FLAGS}")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${HARDENING_FLAGS}")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now")
+endif()
+
+# Option to use bundled PDFium
+option(USE_PDFIUM_BUNDLE "Use bundled PDFium library instead of system version" ON)
 
 # 设置C++标准
 set(CMAKE_CXX_STANDARD 17)
@@ -81,7 +95,21 @@ endif()
 
 # 查找Qt和DTK
 find_package(Qt${QT_DESIRED_VERSION} REQUIRED COMPONENTS ${qt_required_components})
-find_package(Dtk${DTK_VERSION_MAJOR} REQUIRED COMPONENTS Widget Gui Core)
+
+if(NOT QT_DESIRED_VERSION MATCHES 6)
+    find_package(Qt5DBus REQUIRED)
+    find_package(Qt5PrintSupport QUIET)
+endif()
+
+if(DTK_VERSION_MAJOR)
+    find_package(Dtk${DTK_VERSION_MAJOR} REQUIRED COMPONENTS Widget Gui Core)
+    set(DTK_USE_TARGETS ON)
+else()
+    find_package(DtkWidget REQUIRED)
+    find_package(DtkGui REQUIRED)
+    find_package(DtkCore REQUIRED)
+    set(DTK_USE_TARGETS OFF)
+endif()
 
 # 定义链接库
 set(LINK_LIBS
@@ -93,10 +121,23 @@ set(LINK_LIBS
     Qt${QT_DESIRED_VERSION}::Svg
     Qt${QT_DESIRED_VERSION}::Concurrent
     Qt${QT_DESIRED_VERSION}::Xml
-    Dtk${DTK_VERSION_MAJOR}::Widget
-    Dtk${DTK_VERSION_MAJOR}::Gui
-    Dtk${DTK_VERSION_MAJOR}::Core
 )
+
+if(NOT QT_DESIRED_VERSION MATCHES 6)
+    list(APPEND LINK_LIBS Qt5::DBus)
+    if(Qt5PrintSupport_FOUND)
+        list(APPEND LINK_LIBS Qt5::PrintSupport)
+    endif()
+endif()
+
+# Qt6使用命名空间目标，Qt5使用变量
+if(DTK_USE_TARGETS)
+    list(APPEND LINK_LIBS
+        Dtk${DTK_VERSION_MAJOR}::Widget
+        Dtk${DTK_VERSION_MAJOR}::Gui
+        Dtk${DTK_VERSION_MAJOR}::Core
+    )
+endif()
 
 # 添加Qt6特有链接库
 if (QT_DESIRED_VERSION MATCHES 6)
@@ -118,9 +159,18 @@ add_link_options(
 )
 
 # 添加子项目
-add_subdirectory(3rdparty/deepin-pdfium)
 add_subdirectory(reader)
 add_subdirectory(htmltopdf)
+
+if (USE_PDFIUM_BUNDLE)
+    add_subdirectory(3rdparty/deepin-pdfium)
+endif()
+
+# 单元测试（可选）
+option(BUILD_TESTS "Build unit tests" OFF)
+if (BUILD_TESTS)
+    add_subdirectory(tests)
+endif()
 
 # translation files
 TRANSLATION_GENERATE(QM_FILES ${CMAKE_SOURCE_DIR}/translations)
