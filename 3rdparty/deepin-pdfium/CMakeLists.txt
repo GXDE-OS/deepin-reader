@@ -21,7 +21,6 @@ add_compile_options(
     -fstack-protector-strong 
     -D_FORTITY_SOURCE=1 
     -z noexecstack 
-    -pie 
     -fPIC 
     -Wno-unused-parameter
 )

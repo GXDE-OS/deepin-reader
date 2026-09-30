@@ -243,19 +243,22 @@ if (QT_DESIRED_VERSION MATCHES 6)
     list(APPEND LINK_LIBS Qt${QT_DESIRED_VERSION}::Core5Compat)
 endif()
 
-# 安全编译选项
+# 安全编译选项（共享库统一使用 -fPIC；-pie 仅用于可执行文件）
 add_compile_options(
     -fstack-protector-strong
     -D_FORTIFY_SOURCE=2
     -fPIC
-    -pie
     -Wno-unused-parameter
 )
 
 add_link_options(
-    -pie
     -z lazy
 )
+
+# 仅为可执行文件启用 PIE（位置无关可执行文件）。
+# 注意：不要使用 add_link_options(-pie)，否则会作用到 SHARED 库目标，
+# 导致链接共享库时链接器按可执行文件方式寻找 main，报 undefined reference to 'main'。
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie")
 
 # 添加子项目
 add_subdirectory(reader)
