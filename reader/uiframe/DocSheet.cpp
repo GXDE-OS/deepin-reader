@@ -1,4 +1,4 @@
-// Copyright (C) 2019 ~ 2026 Uniontech Software Technology Co.,Ltd.
+// Copyright (C) 2019 - 2026 Uniontech Software Technology Co.,Ltd.
 // SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -72,8 +72,8 @@ DocSheet::DocSheet(const Dr::FileType &fileType, const QString &filePath,  QWidg
     connect(m_searchTask, &PageSearchThread::finished, this, &DocSheet::onSearchFinished, Qt::QueuedConnection);
     connect(m_searchTask, &PageSearchThread::sigSearchResultNotEmpty, this, &DocSheet::onSearchResultNotEmpty, Qt::QueuedConnection);
 
-    m_renderer = new SheetRenderer(this);
-    connect(m_renderer, &SheetRenderer::sigOpened, this, &DocSheet::onOpened);
+    m_renderer = QSharedPointer<SheetRenderer>::create();
+    connect(m_renderer.data(), &SheetRenderer::sigOpened, this, &DocSheet::onOpened);
 
     m_browser = new SheetBrowser(this);
     m_browser->setMinimumWidth(481);
@@ -88,12 +88,17 @@ DocSheet::DocSheet(const Dr::FileType &fileType, const QString &filePath,  QWidg
     else if (Dr::XPS == fileType)
         m_sidebar = new SheetSidebar(this, PREVIEW_THUMBNAIL | PREVIEW_CATALOG | PREVIEW_BOOKMARK);
 #endif
+#ifdef OFD_SUPPORT_ENABLED
+    else if (Dr::OFD == fileType)
+        m_sidebar = new SheetSidebar(this, PREVIEW_THUMBNAIL | PREVIEW_CATALOG | PREVIEW_BOOKMARK);
+#endif
     else
         m_sidebar = new SheetSidebar(this);
 
     m_sidebar->setMinimumWidth(266);
 
     connect(m_browser, SIGNAL(sigPageChanged(int)), this, SLOT(onBrowserPageChanged(int)));
+    connect(m_browser, &SheetBrowser::sigDeformed, this, &DocSheet::onBrowserDeformed);
     connect(m_browser, SIGNAL(sigNeedPagePrev()), this, SLOT(onBrowserPagePrev()));
     connect(m_browser, SIGNAL(sigNeedPageNext()), this, SLOT(onBrowserPageNext()));
     connect(m_browser, SIGNAL(sigNeedPageFirst()), this, SLOT(onBrowserPageFirst()));
@@ -104,6 +109,36 @@ DocSheet::DocSheet(const Dr::FileType &fileType, const QString &filePath,  QWidg
     resetChildParent();
     this->insertWidget(0, m_browser);
     this->insertWidget(0, m_sidebar);
+
+    // 用户拖拽 splitter 调整侧边栏宽度时记录
+    connect(this, &DSplitter::splitterMoved, this, [this](int pos, int index) {
+        Q_UNUSED(pos)
+        Q_UNUSED(index)
+        if (m_sidebar && m_sidebar->isVisible() && m_sidebar->width() > 0) {
+            m_operation.sidebarWidth = m_sidebar->width();
+            m_operation.sidebarWidthChanged = true;
+        }
+    });
+
+    // 定时自动保存（30秒）
+    m_autoSaveTimer = new QTimer(this);
+    m_autoSaveTimer->setInterval(30000);
+    m_autoSaveTimer->setSingleShot(false);
+    connect(m_autoSaveTimer, &QTimer::timeout, this, &DocSheet::onAutoSave);
+
+    // 阅读进度防抖保存：页面切换后短延时写入数据库，
+    // 连续翻页/滚动时自动合并，异常退出（如 killall）时进度不丢
+    m_progressSaveTimer = new QTimer(this);
+    m_progressSaveTimer->setInterval(kProgressSaveDebounceMs);
+    m_progressSaveTimer->setSingleShot(true);
+    connect(m_progressSaveTimer, &QTimer::timeout, this, &DocSheet::saveProgressToDb);
+
+    // 阅读位置恢复稳定计时器：布局连续无变化后执行最终恢复（见 beginRestoreGuard）
+    m_restoreSettleTimer = new QTimer(this);
+    m_restoreSettleTimer->setInterval(kRestoreSettleMs);
+    m_restoreSettleTimer->setSingleShot(true);
+    connect(m_restoreSettleTimer, &QTimer::timeout, this, &DocSheet::onLayoutSettled);
+
     qCDebug(appLog) << "DocSheet created end";
 }
 
@@ -122,11 +157,13 @@ DocSheet::~DocSheet()
 
     setAlive(false);
 
+    // 排空引用本 sheet 的所有待处理渲染任务(仅优化,避免为将死文档做无用渲染);
+    // 正确性由任务中捕获的renderer共享引用与uuid校验保证,不再依赖析构与线程间的时序
+    PageRenderThread::clearAllTasksForSheet(this);
+
     delete m_browser;
 
     delete m_sidebar;
-
-    delete m_renderer;
 
     delete m_searchTask;
 
@@ -200,6 +237,17 @@ bool DocSheet::existSheet(DocSheet *sheet)
     return result;
 }
 
+bool DocSheet::existSheetByUuid(const QString &uuid)
+{
+    g_lock.lockForRead();
+
+    bool result = !uuid.isEmpty() && g_uuidList.contains(uuid);
+
+    g_lock.unlock();
+
+    return result;
+}
+
 DocSheet *DocSheet::getSheet(QString uuid)
 {
     qCDebug(appLog) << "getSheet";
@@ -244,7 +292,7 @@ bool DocSheet::openFileExec(const QString &password)
     qCDebug(appLog) << "Executing file open synchronously";
     m_password = password;
 
-    bool result = m_renderer->openFileExec(password);
+    bool result = m_renderer->openFileExec(password, m_filePath, convertedFileDir(), m_uuid, static_cast<int>(m_fileType), this);
     if (!result) {
         qCWarning(appLog) << "Failed to open file synchronously";
     }
@@ -258,7 +306,7 @@ void DocSheet::openFileAsync(const QString &password)
     m_password = password;
 
     qCInfo(appLog) << "添加异步打开任务...";
-    m_renderer->openFileAsync(m_password);
+    m_renderer->openFileAsync(m_password, m_filePath, convertedFileDir(), m_uuid, static_cast<int>(m_fileType), this);
 }
 
 void DocSheet::jumpToPage(int page)
@@ -277,6 +325,12 @@ void DocSheet::jumpToFirstPage()
 {
     qCDebug(appLog) << "jumpToFirstPage";
     m_browser->setCurrentPage(1);
+}
+
+void DocSheet::dismissRestoreTip()
+{
+    qCDebug(appLog) << "dismissRestoreTip";
+    m_needsRestoreTip = false;
 }
 
 void DocSheet::jumpToLastPage()
@@ -315,6 +369,11 @@ void DocSheet::jumpToOutline(const qreal  &left, const qreal &top, int index)
 {
     qCDebug(appLog) << "jumpToOutline";
     m_browser->jumpToOutline(left, top, index);
+}
+
+bool DocSheet::navigateTo(const deepin_reader::NavigationTarget &target)
+{
+    return m_browser && m_browser->navigateTo(target);
 }
 
 void DocSheet::jumpToHighLight(deepin_reader::Annotation *annotation, const int index)
@@ -377,7 +436,12 @@ void DocSheet::setBookMark(int index, int state)
 
     m_browser->setBookMark(index, state);
 
-    setBookmarkChanged(true);
+    saveProgressToDb();
+
+    Database::instance()->saveBookmarks(filePath(), m_bookmarks);
+    Database::instance()->flushToDisk();
+    m_bookmarkChanged = false;
+
     qCDebug(appLog) << "setBookMark end";
 }
 
@@ -400,7 +464,12 @@ void DocSheet::setBookMarks(const QList<int> &indexlst, int state)
     if (!state)
         showTips(tr("The bookmark has been removed"));
 
-    setBookmarkChanged(true);
+    saveProgressToDb();
+
+    Database::instance()->saveBookmarks(filePath(), m_bookmarks);
+    Database::instance()->flushToDisk();
+    m_bookmarkChanged = false;
+
     qCDebug(appLog) << "setBookMarks end";
 }
 
@@ -471,10 +540,17 @@ QPixmap DocSheet::thumbnail(int index)
     return m_thumbnailMap.value(index);
 }
 
-void DocSheet::setThumbnail(int index, QPixmap pixmap)
+QVector<QRectF> DocSheet::thumbnailImageRects(int index)
+{
+    // qCDebug(appLog) << "thumbnailImageRects";
+    return m_thumbnailImageRects.value(index);
+}
+
+void DocSheet::setThumbnail(int index, QPixmap pixmap, const QVector<QRectF> &imageRects)
 {
     // qCDebug(appLog) << "setThumbnail";
     m_thumbnailMap[index] = pixmap;
+    m_thumbnailImageRects[index] = imageRects;
 }
 
 void DocSheet::setScaleMode(Dr::ScaleMode mode)
@@ -579,15 +655,26 @@ bool DocSheet::saveData()
     PERF_PRINT_BEGIN("POINT-04", QString("filename=%1,filesize=%2").arg(QFileInfo(this->filePath()).fileName()).arg(QFileInfo(this->filePath()).size()));
 
     //文档改变或者原文档被删除 则进行数据保存
-    if ((m_documentChanged || !QFile(m_filePath).exists()) && !m_renderer->save())
+    const bool fileWasMissing = !QFile(m_filePath).exists();
+    if ((m_documentChanged || fileWasMissing) && !m_renderer->save())
         return false;
 
+    // 保存（或重建文件）会导致文件内容变化
+    const bool contentSaved = m_documentChanged || fileWasMissing;
     m_documentChanged = false;
 
-    if (m_bookmarkChanged && !Database::instance()->saveBookmarks(filePath(), m_bookmarks))
+    // 书签有变化，或保存导致文件内容变化时，都重写书签以刷新内容指纹，
+    // 避免下次打开时书签因指纹不匹配被误判为旧文件遗留
+    if ((m_bookmarkChanged || contentSaved) && !Database::instance()->saveBookmarks(filePath(), m_bookmarks))
         return false;
 
     m_bookmarkChanged = false;
+
+    // 保存会改变文件内容，同步刷新缓存哈希，
+    // 避免后续自动保存将过期哈希写入 operation 导致下次打开时误判过期
+    if (contentSaved) {
+        m_cachedContentHash = Database::computeContentHash(m_filePath);
+    }
 
     m_sidebar->changeResetModelData();
 
@@ -809,6 +896,10 @@ QString DocSheet::filter()
         return QStringLiteral("XPS Files (*.xps);;Pdf Files (*.pdf)");
     }
 #endif
+#ifdef OFD_SUPPORT_ENABLED
+    else if (Dr::OFD == m_fileType)
+        return "OFD Files (*.ofd)";
+#endif
 
     qCDebug(appLog) << "filter end, return:";
     return "";
@@ -829,6 +920,11 @@ QString DocSheet::format()
         qCDebug(appLog) << "filter end, return:";
         return QString("DJVU");
     }
+#ifdef OFD_SUPPORT_ENABLED
+    else if (Dr::OFD == m_fileType) {
+        return QString("OFD");
+    }
+#endif
     qCDebug(appLog) << "format end, return:";
     return "";
 }
@@ -843,6 +939,12 @@ SheetOperation DocSheet::operation() const
 {
     // qCDebug(appLog) << "operation";
     return m_operation;
+}
+
+void DocSheet::setSidebarWidth(int width)
+{
+    m_operation.sidebarWidth = width;
+    m_operation.sidebarWidthChanged = true;
 }
 
 SheetOperation &DocSheet::operationRef()
@@ -1239,6 +1341,8 @@ void DocSheet::onSideAniFinished()
 
 void DocSheet::onOpened(deepin_reader::Document::Error error)
 {
+    qCInfo(appLog) << "onOpened enter error=" << error << "restored=" << m_restoredFromState
+                    << "currentPage=" << m_operation.currentPage << "scrollPos=" << m_operation.scrollPosition;
     qCDebug(appLog) << "onOpened";
     if (deepin_reader::Document::NeedPassword == error) {
         qCDebug(appLog) << "onOpened NeedPassword";
@@ -1263,8 +1367,41 @@ void DocSheet::onOpened(deepin_reader::Document::Error error)
         }
 
         m_browser->init(m_operation, m_bookmarks);
+        qCInfo(appLog) << "onOpened after init: restored=" << m_restoredFromState
+                        << "currentPage=" << m_operation.currentPage << "scrollPos=" << m_operation.scrollPosition
+                        << "sidebarW=" << m_operation.sidebarWidth << "changed=" << m_operation.sidebarWidthChanged
+                        << "sidebarVisible=" << m_operation.sidebarVisible << "scaleMode=" << m_operation.scaleMode;
+
+        // 恢复阅读位置：守卫期间以保存页码为锚，布局稳定后执行精细比例恢复并校验页码
+        if (m_restoredFromState && m_operation.scrollPosition > 0.0f) {
+            beginRestoreGuard(true);
+        }
 
         m_sidebar->handleOpenSuccess();
+
+        // 恢复目录树展开状态
+        if (m_restoredFromState && !m_operation.expandedSections.isEmpty()) {
+            QTimer::singleShot(kRestoreCatalogDelayMs, this, [this]() {
+                m_sidebar->restoreExpandedSections(m_operation.expandedSections);
+            });
+        }
+
+        // 恢复侧边栏宽度（仅当用户主动调整过时才恢复，避免覆盖 QSplitter 默认布局）
+        if (m_restoredFromState && m_operation.sidebarWidthChanged && m_operation.sidebarWidth > 0) {
+            QTimer::singleShot(kRestoreCatalogDelayMs, this, [this]() {
+                if (this->width() > m_operation.sidebarWidth + this->handleWidth()) {
+                    QList<int> sizes;
+                    sizes << m_operation.sidebarWidth;
+                    sizes << this->width() - m_operation.sidebarWidth - this->handleWidth();
+                    this->setSizes(sizes);
+                }
+            });
+        }
+
+        // 启动定时自动保存
+        if (m_autoSaveTimer) {
+            m_autoSaveTimer->start();
+        }
 
         emit sigOperationChanged(this);
 
@@ -1380,6 +1517,16 @@ void DocSheet::docBasicInfo(deepin_reader::FileInfo &tFileInfo)
 
     const Properties &propertys = m_renderer->properties();
     tFileInfo.format = format();
+#ifdef OFD_SUPPORT_ENABLED
+    if (m_fileType == Dr::OFD) {
+        const QDateTime created = propertys.value("CreationDate").toDateTime();
+        const QDateTime modified = propertys.value("ModificationDate").toDateTime();
+        if (created.isValid())
+            tFileInfo.createTime = created;
+        if (modified.isValid())
+            tFileInfo.changeTime = modified;
+    }
+#endif
     tFileInfo.optimization = propertys.value("Linearized").toBool();
     QString keywords = propertys.value("KeyWords").toString();
     if (keywords.isEmpty()) {
@@ -1409,17 +1556,35 @@ void DocSheet::docBasicInfo(deepin_reader::FileInfo &tFileInfo)
 
 void DocSheet::onBrowserPageChanged(int page)
 {
+    qCDebug(appLog) << "onBrowserPageChanged" << page << "prev currentPage=" << m_operation.currentPage;
     qCDebug(appLog) << "onBrowserPageChanged";
+    // 阅读位置恢复守卫期间（布局未稳定）：页码以保存值为锚，
+    // 不回写操作记录、不触发进度落盘，避免比例恢复跨页污染页码
+    if (m_restoreGuardActive) {
+        qCInfo(appLog) << "onBrowserPageChanged ignored during restore guard, anchorPage=" << m_restoreAnchorPage;
+        return;
+    }
+    // 非当前页签（不可见）时用户无法滚动，页码变化必是布局/程序行为，
+    // 回写会污染保存的阅读进度（多文档启动期尤甚）
+    if (m_browser && !m_browser->isVisible()) {
+        qCInfo(appLog) << "onBrowserPageChanged ignored: sheet not visible, page=" << page;
+        return;
+    }
     if (m_operation.currentPage != page) {
         m_operation.currentPage = page;
         if (m_sidebar)
             m_sidebar->setCurrentPage(page);
+
+        // 页面变化后防抖保存阅读进度，异常退出时进度不丢
+        if (m_progressSaveTimer)
+            m_progressSaveTimer->start();
     }
 }
 
 void DocSheet::onBrowserPageFirst()
 {
     qCDebug(appLog) << "onBrowserPageFirst";
+    dismissRestoreTip();
     jumpToFirstPage();
 }
 
@@ -1452,6 +1617,10 @@ void DocSheet::onBrowserOperaAnnotation(int type, int index, deepin_reader::Anno
     qCDebug(appLog) << "onBrowserOperaAnnotation";
     m_sidebar->handleAnntationMsg(type, index, anno);
     setDocumentChanged(true);
+
+    if (m_autoSaveTimer) {
+        m_autoSaveTimer->start(100);
+    }
 }
 
 void DocSheet::prepareSearch()
@@ -1481,6 +1650,14 @@ void DocSheet::jumpToPrevSearchResult()
     qCDebug(appLog) << "jumpToPrevSearchResult";
     //m_sidebar->jumpToPrevSearchResult();  //左侧应该同时跳转，目前无此需求
     m_browser->jumpToPrevSearchResult();
+}
+
+void DocSheet::closeFindWidget()
+{
+    qCDebug(appLog) << "closeFindWidget";
+    stopSearch();
+    if (m_browser)
+        m_browser->hideFindWidget();
 }
 
 void DocSheet::stopSearch()
@@ -1562,13 +1739,26 @@ void DocSheet::setAlive(bool alive)
 
         if (Database::instance()->readOperation(this)) {
             qCInfo(appLog) << "read from database config";
+            qCInfo(appLog) << "setAlive readOperation HIT currentPage=" << m_operation.currentPage
+                             << "scrollPos=" << m_operation.scrollPosition;
+            m_restoredFromState = true;
+        } else if (Database::instance()->matchOperationByContent(QFileInfo(m_filePath), this)) {
+            // 文件移动/重命名后通过内容特征匹配恢复状态
+            qCInfo(appLog) << "read from content match config";
+            qCInfo(appLog) << "setAlive matchByContent HIT currentPage=" << m_operation.currentPage
+                             << "scrollPos=" << m_operation.scrollPosition;
+            m_restoredFromState = true;
         } else if (readLastFileOperation()) {
             qCInfo(appLog) << "read from last operation file config";
+            qCInfo(appLog) << "setAlive readLastFileOperation currentPage=" << m_operation.currentPage
+                             << "scrollPos=" << m_operation.scrollPosition;
         } else {
             qCInfo(appLog) << "read from default config";
+            qCInfo(appLog) << "setAlive default currentPage=" << m_operation.currentPage;
         }
 
         Database::instance()->readBookmarks(m_filePath, m_bookmarks);
+        qCInfo(appLog) << "setAlive readBookmarks(" << m_filePath << ") count=" << m_bookmarks.count();
 
     } else {
         qCDebug(appLog) << "setAlive alive";
@@ -1577,7 +1767,57 @@ void DocSheet::setAlive(bool alive)
 
         stopSearch();
 
-        Database::instance()->saveOperation(this);
+        // 保存滚动位置
+        if (m_browser) {
+            m_operation.scrollPosition = m_browser->getScrollPosition();
+        }
+
+        // 保存侧边栏宽度和目录树展开状态
+        if (m_sidebar && m_sidebar->isVisible()) {
+            m_operation.sidebarWidth = m_sidebar->width();
+            m_operation.expandedSections = m_sidebar->getExpandedSections();
+        }
+
+        // 停止定时保存
+        if (m_autoSaveTimer) {
+            m_autoSaveTimer->stop();
+        }
+
+        // 停止阅读进度防抖保存（此处已立即全量保存）
+        if (m_progressSaveTimer) {
+            m_progressSaveTimer->stop();
+        }
+
+        // 停止阅读位置恢复守卫（关闭时无需再恢复，页码保持锚点值落盘）
+        if (m_restoreSettleTimer) {
+            m_restoreSettleTimer->stop();
+        }
+        m_restoreGuardActive = false;
+
+        if (m_documentChanged && m_renderer) {
+            if (m_renderer->save()) {
+                m_documentChanged = false;
+                if (m_sidebar) {
+                    m_sidebar->changeResetModelData();
+                }
+                // 注释保存后文件内容已变化，重写书签刷新内容指纹，
+                // 避免下次打开时书签因指纹不匹配被误判为旧文件遗留
+                Database::instance()->saveBookmarks(filePath(), m_bookmarks);
+            } else {
+                qCWarning(appLog) << "Failed to save document annotations on close for:" << m_filePath;
+            }
+        }
+
+        // 关闭时重新计算内容哈希（文件可能已修改）
+        m_cachedContentHash = Database::computeContentHash(m_filePath);
+        Database::instance()->saveOperation(this, m_cachedContentHash);
+
+        if (m_bookmarkChanged) {
+            Database::instance()->saveBookmarks(filePath(), m_bookmarks);
+            m_bookmarkChanged = false;
+        }
+
+        Database::instance()->flushToDisk();
 
         g_lock.lockForWrite();
 
@@ -1662,13 +1902,135 @@ void DocSheet::onExtractPassword(const QString &password)
     qCDebug(appLog) << "Extracted password, attempting to open file";
     m_password = password;
 
-    m_renderer->openFileAsync(m_password);
+    m_renderer->openFileAsync(m_password, m_filePath, convertedFileDir(), m_uuid, static_cast<int>(m_fileType), this);
+}
+
+void DocSheet::saveCurrentViewState()
+{
+    qCDebug(appLog) << "saveCurrentViewState for:" << m_filePath;
+    // 保存滚动位置
+    if (m_browser) {
+        m_operation.scrollPosition = m_browser->getScrollPosition();
+    }
+    // 保存侧边栏宽度和展开状态
+    if (m_sidebar && m_sidebar->isVisible()) {
+        m_operation.sidebarWidth = m_sidebar->width();
+        m_operation.expandedSections = m_sidebar->getExpandedSections();
+    }
+}
+
+void DocSheet::restoreSavedViewState()
+{
+    qCDebug(appLog) << "restoreSavedViewState for:" << m_filePath
+                    << "position:" << m_operation.scrollPosition
+                    << "sidebarWidth:" << m_operation.sidebarWidth;
+    if (!opened())
+        return;
+
+    // 恢复侧边栏宽度（仅当用户主动调整过时才恢复）
+    if (m_sidebar && m_sidebar->isVisible() && m_operation.sidebarWidthChanged && m_operation.sidebarWidth > 0) {
+        QTimer::singleShot(kRestoreCatalogDelayMs, this, [this]() {
+            if (this->width() > m_operation.sidebarWidth + this->handleWidth()) {
+                QList<int> sizes;
+                sizes << m_operation.sidebarWidth;
+                sizes << this->width() - m_operation.sidebarWidth - this->handleWidth();
+                this->setSizes(sizes);
+            }
+        });
+    }
+
+    // 恢复滚动位置（守卫期间若因侧栏宽度恢复等再触发 deform，最终恢复推迟到布局稳定后）
+    // 标签页回切不弹恢复提示条，显隐由 sigCurSheetChanged 按 needsRestoreTip 同步
+    if (m_browser && m_operation.scrollPosition > 0.0f) {
+        if (m_restoreGuardActive) {
+            m_restoreSettleTimer->start(kRestoreSettleMs);
+        } else {
+            beginRestoreGuard(false);
+        }
+    }
+}
+
+void DocSheet::beginRestoreGuard(bool notifyTip)
+{
+    m_restoreGuardActive = true;
+    m_restoreNotifyTip = notifyTip;
+    m_restoreAnchorPage = qBound(1, m_operation.currentPage, qMax(1, pageCount()));
+    m_restoreSettleTimer->start(kRestoreSettleMs);
+    qCInfo(appLog) << "beginRestoreGuard anchorPage=" << m_restoreAnchorPage
+                    << "scrollPos=" << m_operation.scrollPosition << "notifyTip=" << notifyTip;
+}
+
+void DocSheet::onBrowserDeformed()
+{
+    // 守卫期间布局仍在变化（缩放/窗口/侧栏），推迟最终恢复，稳定后再执行
+    if (m_restoreGuardActive)
+        m_restoreSettleTimer->start(kRestoreSettleMs);
+}
+
+void DocSheet::cancelRestoreGuard()
+{
+    if (!m_restoreGuardActive)
+        return;
+
+    m_restoreSettleTimer->stop();
+    m_restoreGuardActive = false;
+    m_restoreNotifyTip = false;
+    dismissRestoreTip();
+
+    // 守卫期间可见页可能已变化，但操作记录仍停留在恢复锚点。
+    // 同页导航不会再发 sigPageChanged，解除守卫时先同步当前可见页。
+    if (m_browser)
+        onBrowserPageChanged(m_browser->currentPage());
+}
+
+void DocSheet::onLayoutSettled()
+{
+    if (!m_restoreGuardActive)
+        return;
+
+    // 页签尚不可见（启动期多文档交替恢复）：滚动条范围是陈旧布局的，
+    // 此刻恢复无效且产生中间态，顺延到页签可见后（deform 会重启计时）再恢复
+    if (m_browser && !m_browser->isVisible()) {
+        m_restoreSettleTimer->start(kRestoreSettleMs);
+        return;
+    }
+
+    m_restoreGuardActive = false;
+
+    if (m_browser && opened() && m_operation.scrollPosition > 0.0f) {
+        // 布局稳定后做精细恢复；比例受缩放/视口影响可能跨页，
+        // 恢复出的页码与锚点不一致时以保存页码为准（页级正确性优先）
+        m_browser->restoreScrollPosition(m_operation.scrollPosition);
+        int restoredPage = m_browser->currentPage();
+        if (restoredPage != m_restoreAnchorPage) {
+            qCInfo(appLog) << "onLayoutSettled ratio drifted page=" << restoredPage
+                            << "-> fallback to anchor page" << m_restoreAnchorPage;
+            m_browser->setCurrentPage(m_restoreAnchorPage);
+        }
+        qCInfo(appLog) << "onLayoutSettled final page=" << m_browser->currentPage()
+                        << "scrollPos=" << m_operation.scrollPosition;
+    }
+
+    if (m_restoreNotifyTip) {
+        m_restoreNotifyTip = false;
+        m_needsRestoreTip = true;
+        emit sigShowRestoreTip(this);
+        emit sigStateRestored(this);
+    }
+}
+
+float DocSheet::currentScrollPosition() const
+{
+    if (m_browser) {
+        return m_browser->getScrollPosition();
+    }
+    return 0.0f;
 }
 
 SheetRenderer *DocSheet::renderer()
 {
     // qCDebug(appLog) << "renderer";
-    return m_renderer;
+    return m_renderer.data();
 }
 
 void DocSheet::onPopPrintDialog()
@@ -1843,4 +2205,93 @@ void DocSheet::LoadingWidget::paintEvent(QPaintEvent *)
     painter.setPen(QPen(QColor(0, 0, 0, int(255 * 0.05)), 1));
     painter.drawPath(path);
     // qCDebug(appLog) << "paintEvent end";
+}
+
+void DocSheet::saveProgressToDb()
+{
+    // 更新滚动位置
+    if (m_browser) {
+        m_operation.scrollPosition = m_browser->getScrollPosition();
+    }
+
+    // 更新侧边栏宽度和目录树展开状态
+    if (m_sidebar && m_sidebar->isVisible()) {
+        m_operation.sidebarWidth = m_sidebar->width();
+        m_operation.expandedSections = m_sidebar->getExpandedSections();
+    }
+
+    // 使用缓存哈希，避免读盘计算；无缓存时刷新一次并缓存
+    if (m_cachedContentHash.isEmpty()) {
+        m_cachedContentHash = Database::computeContentHash(m_filePath);
+    }
+    Database::instance()->saveOperation(this, m_cachedContentHash);
+}
+
+void DocSheet::onAutoSave()
+{
+    qCDebug(appLog) << "Auto-save triggered for:" << m_filePath;
+
+    // 先保存文档注释（高亮、文本标注等），防止异常退出时注释丢失；
+    // 保存会改变文件内容，之后的指纹/哈希计算必须基于最新内容。
+    // docx 为转换打开格式，注释只能写入临时目录中的转换产物 temp.pdf，
+    // 自动保存无法真正持久化；若此处照常保存并清掉脏标志，关闭时会因
+    // fileChanged() 为假而跳过保存确认框，注释随临时目录删除而静默丢失
+    // （BUG-376501）。故 docx 保持未保存状态，由关闭时的确认框引导
+    // 用户另存为 PDF 完成持久化。
+    bool contentSaved = false;
+    if (m_documentChanged && Dr::DOCX != fileType()) {
+        if (m_renderer && m_renderer->save()) {
+            m_documentChanged = false;
+            m_sidebar->changeResetModelData();
+            contentSaved = true;
+        } else {
+            qCWarning(appLog) << "Auto-save: failed to save document annotations for:" << m_filePath;
+        }
+    }
+
+    // 兜底保存书签（正常情况 setBookMark 已立即落盘，此处分防其他路径设的脏标记）；
+    // 注释保存导致内容变化时也重写一次，刷新书签内容指纹，
+    // 避免下次打开时书签因指纹不匹配被误判为旧文件遗留
+    if (m_bookmarkChanged || contentSaved) {
+        Database::instance()->saveBookmarks(filePath(), m_bookmarks);
+        m_bookmarkChanged = false;
+    }
+
+    // 注释保存会改变文件内容，此时必须重算哈希，保证 operation 与文件实际内容一致；
+    // 其余情况沿用缓存哈希（无缓存时由 saveProgressToDb 内部计算），避免每30秒读盘计算
+    if (contentSaved) {
+        m_cachedContentHash = Database::computeContentHash(m_filePath);
+    }
+    saveProgressToDb();
+
+    CentralDocPage *docPage = qobject_cast<CentralDocPage *>(parent());
+    if (docPage && docPage->getCurSheet() == this) {
+        QList<DocSheet *> sheets = docPage->getSheets();
+        if (!sheets.isEmpty()) {
+            MainWindow *mainWnd = qobject_cast<MainWindow *>(docPage->topLevelWidget());
+            int windowIndex = mainWnd ? MainWindow::m_list.indexOf(mainWnd) : -1;
+            if (windowIndex >= 0) {
+                QStringList filePaths;
+                int activeIndex = 0;
+                for (int i = 0; i < sheets.size(); ++i) {
+                    filePaths.append(sheets[i]->filePath());
+                    if (sheets[i] == this)
+                        activeIndex = i;
+                }
+                Database::instance()->saveTabGroup(windowIndex, filePaths, activeIndex);
+            }
+        }
+    }
+
+    Database::instance()->flushToDisk();
+
+    // 保存完成后重置定时器间隔为 30 秒（注释变化时临时设为 3 秒）
+    if (m_autoSaveTimer) {
+        m_autoSaveTimer->setInterval(30000);
+    }
+}
+
+bool DocSheet::needsRestoreTip() const
+{
+    return m_needsRestoreTip;
 }

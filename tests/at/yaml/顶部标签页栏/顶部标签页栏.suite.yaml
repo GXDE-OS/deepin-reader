@@ -1,0 +1,40 @@
+name: 顶部标签页栏_suite
+app: deepin-reader
+description: ''
+module: 顶部标签页栏
+tags: []
+fast_fail: false
+env_check: []
+setup:
+- action: session_start
+  command: pkill -9 -x deepin-reader || true; sleep 1; rm -rf ~/.local/share/deepin/deepin-reader ~/.config/deepin/deepin-reader ~/.cache/deepin/deepin-reader; deepin-reader ${TEST_FILES_DIR}/normal.pdf
+  wait: 3.0
+suites:
+- id: suite_tab_management_s1
+  name: 顶部标签页栏 — 添加/滚动/切换
+  description: ''
+  tags: []
+  steps:
+  - action: mouse_click
+    ref: n210
+    selector:
+      name: normal.pdf
+      role: page tab
+  assert_steps:
+  - action: assert_element
+    ref: n209
+    selector:
+      name: normal.pdf
+      role: page tab
+  - action: assert_element
+    ref: n211
+    selector:
+      name: normal.pdf
+      role: page tab
+  - action: assert_element
+    ref: n212
+    selector:
+      name: normal.pdf
+      role: page tab
+teardown:
+- action: session_stop

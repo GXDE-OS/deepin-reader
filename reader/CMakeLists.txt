@@ -12,6 +12,10 @@ if (XPS_SUPPORT_ENABLED)
     pkg_check_modules(XPS_DEPS REQUIRED libgxps cairo glib-2.0 gobject-2.0 freetype2)
 endif()
 
+if (OFD_SUPPORT_ENABLED)
+    pkg_check_modules(OFD_CAIRO REQUIRED cairo)
+endif()
+
 # 添加位置无关代码编译标志
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIE")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIE")
@@ -54,6 +58,11 @@ file(GLOB_RECURSE WIDGET_SOURCES
     "widgets/*.cpp" 
     "widgets/*.h"
 )
+# eyeprotection sources
+file(GLOB_RECURSE EYE_PROTECTION_SOURCES 
+    "eyeprotection/*.cpp" 
+    "eyeprotection/*.h"
+)
 
 # 定义reader可执行文件
 add_executable(deepin-reader
@@ -64,6 +73,7 @@ add_executable(deepin-reader
     ${SIDEBAR_SOURCES}
     ${UIFRAME_SOURCES}
     ${WIDGET_SOURCES}
+    ${EYE_PROTECTION_SOURCES}
 )
 
 # 启用自动moc处理
@@ -82,8 +92,11 @@ target_include_directories(deepin-reader PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/sidebar
     ${CMAKE_CURRENT_SOURCE_DIR}/uiframe
     ${CMAKE_CURRENT_SOURCE_DIR}/widgets
+    ${CMAKE_CURRENT_SOURCE_DIR}/eyeprotection
     ${PDFIUM_INCLUDE_DIRS}
     $<$<BOOL:${XPS_SUPPORT_ENABLED}>:${XPS_DEPS_INCLUDE_DIRS}>
+    $<$<BOOL:${OFD_SUPPORT_ENABLED}>:${ROFD_INCLUDE_DIR}>
+    $<$<BOOL:${OFD_SUPPORT_ENABLED}>:${OFD_CAIRO_INCLUDE_DIRS}>
 )
 
 # 使用DTK变量包含目录
@@ -102,11 +115,16 @@ endif()
 # 定义安装前缀
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}"
+    INSTALL_LIBDIR="${CMAKE_INSTALL_LIBDIR}"
     APP_VERSION="${APP_VERSION}"
 )
 
 if (XPS_SUPPORT_ENABLED)
     target_compile_options(deepin-reader PRIVATE ${XPS_DEPS_CFLAGS_OTHER})
+endif()
+
+if (OFD_SUPPORT_ENABLED)
+    target_compile_options(deepin-reader PRIVATE ${OFD_CAIRO_CFLAGS_OTHER})
 endif()
 
 # 添加资源文件
@@ -118,6 +136,10 @@ set(READER_LINK_LIBS
 
 if (XPS_SUPPORT_ENABLED)
     list(APPEND READER_LINK_LIBS ${XPS_DEPS_LIBRARIES})
+endif()
+
+if (OFD_SUPPORT_ENABLED)
+    list(APPEND READER_LINK_LIBS ${ROFD_FFI_LIBRARY} ${OFD_CAIRO_LIBRARIES})
 endif()
 
 if (QT_VERSION_MAJOR MATCHES 6)
@@ -175,6 +197,14 @@ if (XPS_SUPPORT_ENABLED)
     )
     message(STATUS ">>> XPS MIME type definition will be installed to ${CMAKE_INSTALL_DATADIR}/mime/packages")
     message(STATUS ">>> Note: After installation, please run 'sudo update-mime-database ${CMAKE_INSTALL_DATADIR}/mime' to update MIME database")
+endif()
+
+if (OFD_SUPPORT_ENABLED)
+    install(FILES
+        ${CMAKE_SOURCE_DIR}/assets/mimetype/ofd.xml
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages
+    )
+    message(STATUS ">>> OFD MIME type definition will be installed to ${CMAKE_INSTALL_DATADIR}/mime/packages")
 endif()
 
 # 安装帮助文件

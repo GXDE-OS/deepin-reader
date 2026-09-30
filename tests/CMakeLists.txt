@@ -74,50 +74,46 @@ endif()
 
 set(XPS_SUPPORT_ENABLED ${XPS_SUPPORT_RESOLVED})
 
+# OFD 支持（检测结果继承自顶层 CMakeLists.txt 的 OFD_SUPPORT_ENABLED / ROFD_*）
+if (OFD_SUPPORT_ENABLED)
+    pkg_check_modules(OFD_CAIRO REQUIRED cairo)
+endif()
+
 # ====== 收集 reader 源文件 ======
-# 根目录源文件（排除 main.cpp）
-file(GLOB READER_ROOT_SOURCES
+# 递归收集 reader/ 下所有源文件，排除 main.cpp
+# 新增子模块时无需修改此文件
+file(GLOB_RECURSE READER_ALL_SOURCES
     "${CMAKE_SOURCE_DIR}/reader/*.cpp"
     "${CMAKE_SOURCE_DIR}/reader/*.c"
     "${CMAKE_SOURCE_DIR}/reader/*.h"
 )
-list(REMOVE_ITEM READER_ROOT_SOURCES "${CMAKE_SOURCE_DIR}/reader/main.cpp")
+list(REMOVE_ITEM READER_ALL_SOURCES "${CMAKE_SOURCE_DIR}/reader/main.cpp")
 
-# 各子模块源文件
-file(GLOB_RECURSE APP_SOURCES     "${CMAKE_SOURCE_DIR}/reader/app/*.cpp" "${CMAKE_SOURCE_DIR}/reader/app/*.h")
-file(GLOB_RECURSE BROWSER_SOURCES "${CMAKE_SOURCE_DIR}/reader/browser/*.cpp" "${CMAKE_SOURCE_DIR}/reader/browser/*.h")
-file(GLOB_RECURSE DOCUMENT_SOURCES "${CMAKE_SOURCE_DIR}/reader/document/*.cpp" "${CMAKE_SOURCE_DIR}/reader/document/*.h")
-file(GLOB_RECURSE SIDEBAR_SOURCES "${CMAKE_SOURCE_DIR}/reader/sidebar/*.cpp" "${CMAKE_SOURCE_DIR}/reader/sidebar/*.h")
-file(GLOB_RECURSE UIFRAME_SOURCES "${CMAKE_SOURCE_DIR}/reader/uiframe/*.cpp" "${CMAKE_SOURCE_DIR}/reader/uiframe/*.h")
-file(GLOB_RECURSE WIDGET_SOURCES  "${CMAKE_SOURCE_DIR}/reader/widgets/*.cpp" "${CMAKE_SOURCE_DIR}/reader/widgets/*.h")
+# ====== 自动发现 reader 子目录作为 include 路径 ======
+file(GLOB READER_SUBDIRS LIST_DIRECTORIES true "${CMAKE_SOURCE_DIR}/reader/*")
+foreach(_dir ${READER_SUBDIRS})
+    if(IS_DIRECTORY "${_dir}")
+        list(APPEND READER_INCLUDE_DIRS "${_dir}")
+    endif()
+endforeach()
+list(APPEND READER_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/reader")
 
 # ====== 收集测试源文件 ======
-file(GLOB TEST_ROOT_SOURCES
+file(GLOB_RECURSE TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.h"
 )
-file(GLOB TEST_APP_SOURCES     "${CMAKE_CURRENT_SOURCE_DIR}/app/*.cpp")
-file(GLOB TEST_BROWSER_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/browser/*.cpp")
-file(GLOB TEST_DOCUMENT_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/document/*.cpp")
-file(GLOB TEST_SIDEBAR_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/sidebar/*.cpp")
-file(GLOB TEST_UIFRAME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/uiframe/*.cpp")
-file(GLOB TEST_WIDGET_SOURCES  "${CMAKE_CURRENT_SOURCE_DIR}/widgets/*.cpp")
+# 排除非测试辅助目录（如 at/、files/ 等资源目录）
+list(FILTER TEST_SOURCES EXCLUDE REGEX "${CMAKE_CURRENT_SOURCE_DIR}/at/")
+list(FILTER TEST_SOURCES EXCLUDE REGEX "${CMAKE_CURRENT_SOURCE_DIR}/files/")
+list(FILTER TEST_SOURCES EXCLUDE REGEX "${CMAKE_CURRENT_SOURCE_DIR}/include/")
+# batch-print 测试为独立可执行文件（见 batch-print/CMakeLists.txt），不并入本测试目标
+list(FILTER TEST_SOURCES EXCLUDE REGEX "${CMAKE_CURRENT_SOURCE_DIR}/batch-print/")
 
 # ====== 合并所有源文件 ======
 set(ALL_SOURCES
-    ${READER_ROOT_SOURCES}
-    ${APP_SOURCES}
-    ${BROWSER_SOURCES}
-    ${DOCUMENT_SOURCES}
-    ${SIDEBAR_SOURCES}
-    ${UIFRAME_SOURCES}
-    ${WIDGET_SOURCES}
-    ${TEST_ROOT_SOURCES}
-    ${TEST_APP_SOURCES}
-    ${TEST_BROWSER_SOURCES}
-    ${TEST_DOCUMENT_SOURCES}
-    ${TEST_SIDEBAR_SOURCES}
-    ${TEST_UIFRAME_SOURCES}
-    ${TEST_WIDGET_SOURCES}
+    ${READER_ALL_SOURCES}
+    ${TEST_SOURCES}
 )
 
 # ====== 定义测试可执行文件 ======
@@ -130,18 +126,15 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 )
 
 # ====== 包含目录 ======
+# READER_INCLUDE_DIRS 由上方自动发现，新增子模块时无需手动添加
 target_include_directories(${PROJECT_NAME} PUBLIC
-    ${CMAKE_SOURCE_DIR}/reader
-    ${CMAKE_SOURCE_DIR}/reader/app
-    ${CMAKE_SOURCE_DIR}/reader/browser
-    ${CMAKE_SOURCE_DIR}/reader/document
-    ${CMAKE_SOURCE_DIR}/reader/sidebar
-    ${CMAKE_SOURCE_DIR}/reader/uiframe
-    ${CMAKE_SOURCE_DIR}/reader/widgets
+    ${READER_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include/gtest
     ${PDFIUM_INCLUDE_DIRS}
     $<$<BOOL:${XPS_SUPPORT_ENABLED}>:${XPS_DEPS_INCLUDE_DIRS}>
+    $<$<BOOL:${OFD_SUPPORT_ENABLED}>:${ROFD_INCLUDE_DIR}>
+    $<$<BOOL:${OFD_SUPPORT_ENABLED}>:${OFD_CAIRO_INCLUDE_DIRS}>
 )
 
 # DTK 包含目录（Qt5 使用变量，Qt6 使用目标）
@@ -159,6 +152,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     UTSOURCEDIR="${CMAKE_CURRENT_SOURCE_DIR}"
     APP_VERSION="${APP_VERSION}"
     INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}"
+    INSTALL_LIBDIR="${CMAKE_INSTALL_LIBDIR}"
 )
 
 if (QT_DESIRED_VERSION MATCHES 6)
@@ -171,6 +165,7 @@ target_compile_options(${PROJECT_NAME} PRIVATE
     -fprofile-arcs -ftest-coverage
     -fstack-protector-strong -D_FORTIFY_SOURCE=1 -fPIC
     $<$<BOOL:${XPS_SUPPORT_ENABLED}>:${XPS_DEPS_CFLAGS_OTHER}>
+    $<$<BOOL:${OFD_SUPPORT_ENABLED}>:${OFD_CAIRO_CFLAGS_OTHER}>
 )
 
 target_link_options(${PROJECT_NAME} PRIVATE
@@ -228,6 +223,11 @@ if (XPS_SUPPORT_ENABLED)
     list(APPEND TEST_LINK_LIBS ${XPS_DEPS_LIBRARIES})
 endif()
 
+# OFD 链接
+if (OFD_SUPPORT_ENABLED)
+    list(APPEND TEST_LINK_LIBS ${ROFD_FFI_LIBRARY} ${OFD_CAIRO_LIBRARIES})
+endif()
+
 # PDFium 链接
 if (USE_PDFIUM_BUNDLE)
     target_include_directories(${PROJECT_NAME} PUBLIC
@@ -251,3 +251,6 @@ target_sources(${PROJECT_NAME} PRIVATE ${RESOURCES})
 # 启用测试
 enable_testing()
 add_test(NAME ${PROJECT_NAME} COMMAND ${PROJECT_NAME})
+
+# 批量打印单元测试（独立 gtest 可执行文件）
+add_subdirectory(batch-print)

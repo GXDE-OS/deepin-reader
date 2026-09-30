@@ -1,5 +1,5 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2019 ~ 2026 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -11,6 +11,7 @@
 #include <DSplitter>
 #include <QSet>
 #include <QReadWriteLock>
+#include <QSharedPointer>
 #include <QThread>
 #include <QSize>
 #include <QRectF>
@@ -20,7 +21,21 @@ class SlideWidget;
 class EncryptionPage;
 class QPropertyAnimation;
 class QPrinter;
+
+constexpr int kRestoreCatalogDelayMs = 150;
+
+// 阅读位置恢复的布局稳定窗口（毫秒）：守卫期间以保存页码为锚，deform 每次都回到锚点页；
+// 布局连续该时长无变化后视为稳定，再执行精细比例恢复并校验页码。
+// 启动阶段 fit-width 缩放会随窗口/侧栏宽度变化多次重算，若立即用整篇比例换算绝对位置，
+// 会在中间态布局上跨页，页码被污染后后续 deform 还会滚到错误页顶并落盘（进度"跳回上一页"）
+constexpr int kRestoreSettleMs = 400;
+
+// 阅读进度防抖落盘延时（毫秒）：页面切换后延时写入数据库，连续翻页/滚动时自动合并，
+// 保证异常退出（如 killall）时阅读进度不丢。防抖时间 0.5s
+constexpr int kProgressSaveDebounceMs = 500;
+
 class PageSearchThread;
+class QTimer;
 struct SheetOperation {
     Dr::LayoutMode layoutMode   = Dr::SinglePageMode;
     Dr::MouseShape mouseShape   = Dr::MouseShapeNormal;
@@ -30,6 +45,14 @@ struct SheetOperation {
     bool sidebarVisible         = false;
     int  sidebarIndex           = 0;
     int  currentPage            = 1;
+    // 侧边栏宽度
+    int  sidebarWidth           = 200;
+    // 标记用户是否主动调整过侧边栏宽度
+    bool sidebarWidthChanged    = false;
+    // 滚动位置（纵向偏移比例 0.0~1.0）
+    float scrollPosition        = 0.0f;
+    // 目录树展开节点标题路径列表（如 ["1.概述", "1.概述/1.1 背景"]）
+    QStringList expandedSections;
 };
 
 DWIDGET_BEGIN_NAMESPACE
@@ -86,6 +109,14 @@ public:
      * @return
      */
     static bool existSheet(DocSheet *sheet);
+
+    /**
+     * @brief existSheetByUuid
+     * 进程是否存在该uuid对应的文档(worker线程安全,仅读锁+串查找)
+     * @param uuid
+     * @return
+     */
+    static bool existSheetByUuid(const QString &uuid);
 
     /**
      * @brief getSheet
@@ -211,6 +242,8 @@ public:
      * @return
      */
     deepin_reader::Outline outline();
+    bool navigateTo(const deepin_reader::NavigationTarget &target);
+    bool hasRestoredViewState() const { return m_restoredFromState; }
 
     /**
      * @brief jumpToOutline
@@ -289,11 +322,20 @@ public:
     QPixmap thumbnail(int index);
 
     /**
+     * @brief thumbnailImageRects
+     * 获取缩略图对应的图片对象 bbox(夜间/深色蒙版用,与缩略图像素对齐;需要先设置)
+     * @param index
+     * @return 该页无图片对象时为空
+     */
+    QVector<QRectF> thumbnailImageRects(int index);
+
+    /**
      * @brief setThumbnail
      * @param index
      * @param pixmap
+     * @param imageRects 图片对象 bbox(缩略图渲染坐标系,与 pixmap 对齐),随缩略图一同缓存
      */
-    void setThumbnail(int index, QPixmap pixmap);
+    void setThumbnail(int index, QPixmap pixmap, const QVector<QRectF> &imageRects = QVector<QRectF>());
 
     /**
      * @brief openMagnifier
@@ -433,6 +475,13 @@ public:
      * @return
      */
     QSet<int> getBookMarkList() const;
+
+    /**
+     * @brief setSidebarWidth
+     * 设置侧边栏宽度并标记为用户主动调整
+     * @param width 宽度
+     */
+    void setSidebarWidth(int width);
 
     /**
      * @brief operation
@@ -579,6 +628,12 @@ public:
     void jumpToPrevSearchResult();
 
     /**
+     * @brief closeFindWidget
+     * 关闭搜索框并停止搜索,切换标签页时调用
+     */
+    void closeFindWidget();
+
+    /**
      * @brief showEncryPage
      * 显示解锁页面
      */
@@ -615,11 +670,70 @@ public:
     QSizeF pageSizeByIndex(int index);
 
     /**
+     * @brief 保存当前阅读状态到操作记录中
+     * 包括滚动位置、侧边栏宽度和展开状态，用于标签页切换时保存阅读位置
+     */
+    void saveCurrentViewState();
+
+    /**
+     * @brief 将当前阅读进度立即写入数据库
+     * 更新滚动位置/侧栏状态到 m_operation 并执行 saveOperation。
+     * 供书签等已有即时落盘的操作顺带保存进度，异常退出（如 killall）后进度不丢。
+     * 页面切换时由 m_progressSaveTimer 防抖调用（见 kProgressSaveDebounceMs）。
+     */
+    void saveProgressToDb();
+
+    /**
+     * @brief needsRestoreTip 该 sheet 是否仍需要显示恢复阅读位置提示条
+     */
+    bool needsRestoreTip() const;
+
+    /**
+     * @brief dismissRestoreTip 清除恢复提示标记并隐藏提示条
+     * 在用户主动跳转首页（按钮/快捷键/翻页控件）时由调用方显式调用，
+     * 不放在 jumpToFirstPage() 内以避免隐式副作用扩散。
+     */
+    void dismissRestoreTip();
+
+    /**
+     * @brief 恢复已保存的阅读状态
+     * 包括滚动位置和侧边栏宽度，用于标签页切换回来时恢复阅读位置
+     */
+    void restoreSavedViewState();
+
+    /**
+     * @brief 开始阅读位置恢复守卫
+     * 以 m_operation.currentPage 为锚点：守卫期间页码信号不回写操作记录、不触发进度落盘，
+     * deform 重布局时自动回到锚点页；布局连续 kRestoreSettleMs 无变化后
+     * 在 onLayoutSettled 中执行精细比例恢复并校验页码，最后解除守卫。
+     * @param notifyTip 是否在恢复完成后发出恢复提示（仅打开文档的首次恢复为 true；
+     *                  标签页回切不弹条，显隐由 sigCurSheetChanged 按 needsRestoreTip 同步，
+     *                  避免用户已关闭的提示条再次弹出）
+     */
+    void beginRestoreGuard(bool notifyTip);
+
+    /** 有效的用户导航优先于尚未完成的阅读位置恢复。 */
+    void cancelRestoreGuard();
+
+    /**
+     * @brief 获取当前滚动位置（0.0~1.0）
+     */
+    float currentScrollPosition() const;
+
+    /**
      * @brief renderer
      * 获取渲染器
      * @return
      */
     SheetRenderer *renderer();
+
+    /**
+     * @brief rendererPtr
+     * 获取渲染器共享引用(入队时捕获,任务在worker线程使用期间生命周期安全)
+     */
+    QSharedPointer<SheetRenderer> rendererPtr() const { return m_renderer; }
+
+    QString uuid() const { return m_uuid; }
 
 public slots:
     /**
@@ -631,6 +745,12 @@ public slots:
      * @brief 阻塞弹出文件信息
      */
     void onPopInfoDialog();
+
+    /**
+     * @brief onAutoSave
+     * 定时自动保存
+     */
+    void onAutoSave();
 
 private:
     /**
@@ -644,6 +764,17 @@ private:
      * @brief 重置sidebar,browser的parent
      */
     void resetChildParent();
+
+    /**
+     * @brief 守卫期间浏览器 deform 后重等布局稳定（见 beginRestoreGuard）
+     */
+    void onBrowserDeformed();
+
+    /**
+     * @brief 布局稳定后的最终恢复：精细比例恢复+页码校验回退锚点，
+     * 解除守卫并发出恢复提示（见 beginRestoreGuard）
+     */
+    void onLayoutSettled();
 
 public slots:
     /**
@@ -755,6 +886,20 @@ signals:
      */
     void sigOperationChanged(DocSheet *sheet);    //被修改了 缩放 当前页等
 
+    /**
+     * @brief sigStateRestored
+     * 状态已恢复信号
+     * @param sheet 恢复状态的文档
+     */
+    void sigStateRestored(DocSheet *sheet);
+
+    /**
+     * @brief sigShowRestoreTip
+     * 请求显示恢复阅读位置提示条
+     * @param sheet 发出请求的文档，Central 据此判断是否为当前活跃标签
+     */
+    void sigShowRestoreTip(DocSheet *sheet);
+
 private slots:
     /**
      * @brief onBrowserPageChanged
@@ -839,7 +984,7 @@ private:
 
     SheetSidebar   *m_sidebar  = nullptr;        //操作左侧ui
     SheetBrowser   *m_browser  = nullptr;        //操作右侧ui
-    SheetRenderer  *m_renderer = nullptr;        //数据渲染器
+    QSharedPointer<SheetRenderer> m_renderer;    //数据渲染器(共享所有权:worker持有引用期间不因析构悬空)
 
     QString         m_filePath;
     QString         m_password;
@@ -847,6 +992,7 @@ private:
     QString         m_uuid;
     QTemporaryDir  *m_tempDir = nullptr;        //存放临时数据
     QMap<int, QPixmap>  m_thumbnailMap;
+    QMap<int, QVector<QRectF>> m_thumbnailImageRects;   //缩略图图片对象 bbox(与 m_thumbnailMap 同生命周期)
 
     bool m_documentChanged = false;
     bool m_bookmarkChanged = false;
@@ -854,6 +1000,26 @@ private:
     PageSearchThread *m_searchTask = nullptr;
     EncryptionPage  *m_encryPage = nullptr;
     QPropertyAnimation *m_sideAnimation = nullptr;
+
+    // 定时自动保存
+    QTimer *m_autoSaveTimer = nullptr;
+    // 阅读进度防抖保存定时器：页面切换后延时落盘，连续变化自动合并
+    QTimer *m_progressSaveTimer = nullptr;
+    // 标记是否从保存状态恢复
+    bool m_restoredFromState = false;
+    // 阅读位置恢复守卫：布局未稳定期间页码以保存值为锚，防止比例恢复跨页污染页码
+    bool m_restoreGuardActive = false;
+    // 恢复守卫的锚点页（保存的当前页）
+    int m_restoreAnchorPage = 1;
+    // 本次守卫完成后是否允许发出恢复提示（仅打开文档的首次恢复）
+    bool m_restoreNotifyTip = false;
+    // 布局稳定计时器：连续 kRestoreSettleMs 无 deform 后执行最终恢复
+    QTimer *m_restoreSettleTimer = nullptr;
+    // 标记该 sheet 是否仍需要显示恢复阅读位置提示条
+    // 用户点击"跳转到首页"后置为 false，切换 tab 时据此决定是否显示提示条
+    bool m_needsRestoreTip = false;
+    // 缓存的内容哈希，避免自动保存时反复读盘计算
+    QString m_cachedContentHash;
 
 public:
     QProcess *m_process = nullptr; //当前调用的命令的进程地址

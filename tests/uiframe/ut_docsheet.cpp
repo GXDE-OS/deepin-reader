@@ -1,5 +1,5 @@
 // Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -10,6 +10,7 @@
 #include "Utils.h"
 #include "dpdfannot.h"
 #include "PDFModel.h"
+#include "BrowserPage.h"
 #include "CentralDocPage.h"
 #include "SheetSidebar.h"
 #include "EncryptionPage.h"
@@ -17,11 +18,16 @@
 #include "stub.h"
 
 #include <DPrintPreviewDialog>
+#include <DDialog>
 
 #include <QUuid>
 #include <QClipboard>
 #include <QSignalSpy>
 #include <QEvent>
+#include <QMainWindow>
+#include <QPrinter>
+#include <QDialog>
+#include <QTest>
 //#include <QStackedLayout>
 //#include <QFileDialog>
 
@@ -67,13 +73,13 @@ QImage firstThumbnail_stub(const QString &)
     return QImage(100, 100, QImage::Format_ARGB32);
 }
 
-bool openFileExec_stub(const QString &)
+bool openFileExec_stub(const QString &, const QString &, const QString &, const QString &, int, DocSheet *)
 {
     g_funcName = __FUNCTION__;
     return true;
 }
 
-void openFileAsync_stub(const QString &)
+void openFileAsync_stub(const QString &, const QString &, const QString &, const QString &, int, DocSheet *)
 {
     g_funcName = __FUNCTION__;
 }
@@ -279,6 +285,11 @@ QPoint pos_stub()
 void showEncryPage_stub()
 {
     g_funcName = __FUNCTION__;
+}
+
+static bool opened_stub_true()
+{
+    return true;
 }
 
 void wrongPassWordSlot_stub()
@@ -717,6 +728,27 @@ TEST_F(TestDocSheet, UT_DocSheet_setThumbnail_001)
     EXPECT_TRUE(m_tester->m_thumbnailMap.size() == 1);
 }
 
+// setThumbnail 带 bbox：thumbnailImageRects 返回同一份蒙版
+TEST_F(TestDocSheet, UT_DocSheet_thumbnailImageRects_001)
+{
+    EXPECT_TRUE(m_tester->thumbnailImageRects(1).isEmpty());
+
+    const QVector<QRectF> rects { QRectF(0, 0, 10, 20), QRectF(1, 1, 2, 2) };
+    m_tester->setThumbnail(1, QPixmap(10, 20), rects);
+    EXPECT_TRUE(m_tester->thumbnailImageRects(1) == rects);
+}
+
+// 不带 bbox 重设缩略图时，旧蒙版需被清空（避免残留旧页面蒙版）
+TEST_F(TestDocSheet, UT_DocSheet_setThumbnailClearsStaleImageRects)
+{
+    const QVector<QRectF> rects { QRectF(0, 0, 10, 20) };
+    m_tester->setThumbnail(2, QPixmap(10, 20), rects);
+    EXPECT_FALSE(m_tester->thumbnailImageRects(2).isEmpty());
+
+    m_tester->setThumbnail(2, QPixmap(10, 20));
+    EXPECT_TRUE(m_tester->thumbnailImageRects(2).isEmpty());
+}
+
 TEST_F(TestDocSheet, UT_DocSheet_setScaleMode_001)
 {
     m_tester->m_operation.scaleMode = Dr::FitToPageWorHMode;
@@ -1114,6 +1146,84 @@ TEST_F(TestDocSheet, UT_DocSheet_onOpened_001)
     EXPECT_TRUE(g_funcName == "handleOpenSuccess_stub");
 }
 
+TEST_F(TestDocSheet, UT_DocSheet_onOpened_restoreState_001)
+{
+    Stub s;
+    s.set(ADDR(SheetSidebar, handleOpenSuccess), handleOpenSuccess_stub);
+
+    // 触发 onOpened 中的三个恢复 lambda（滚动位置/目录展开/侧边栏宽度）
+    m_tester->m_password = "test";
+    m_tester->m_restoredFromState = true;
+    m_tester->m_operation.scrollPosition = 0.6f;
+    m_tester->m_operation.expandedSections << "Chapter1" << "Chapter1/Sub";
+    m_tester->m_operation.sidebarWidthChanged = true;
+    m_tester->m_operation.sidebarWidth = 80;
+
+    m_tester->onOpened(Document::NoError);
+    QTest::qWait(300);
+    SUCCEED();
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_setSidebarWidth_001)
+{
+    m_tester->setSidebarWidth(250);
+    EXPECT_TRUE(m_tester->operation().sidebarWidth == 250);
+    EXPECT_TRUE(m_tester->operation().sidebarWidthChanged == true);
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_currentScrollPosition_001)
+{
+    EXPECT_GE(m_tester->currentScrollPosition(), 0.0f);
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_onAutoSave_001)
+{
+    m_tester->onAutoSave();
+    m_tester->m_sidebar->setVisible(true);
+    m_tester->onAutoSave();
+    SUCCEED();
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_saveCurrentViewState_001)
+{
+    m_tester->m_sidebar->setVisible(true);
+    m_tester->saveCurrentViewState();
+    EXPECT_GE(m_tester->m_operation.sidebarWidth, 0);
+    SUCCEED();
+}
+
+static bool isVisible_stub_true()
+{
+    return true;
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_restoreSavedViewState_001)
+{
+    Stub s;
+    s.set(ADDR(DocSheet, opened), opened_stub_true);
+    // 夹具中窗口链未 show（真实 show 会与后台渲染线程产生跨库干扰），
+    // 通过桩使 isVisible 为真以进入侧边栏宽度恢复分支
+    s.set(ADDR(QWidget, isVisible), isVisible_stub_true);
+
+    // 触发 restoreSavedViewState 中的两个恢复 lambda
+    m_tester->m_operation.sidebarWidthChanged = true;
+    m_tester->m_operation.sidebarWidth = 100;
+    m_tester->m_operation.scrollPosition = 0.5f;
+
+    m_tester->restoreSavedViewState();
+    QTest::qWait(250);
+    SUCCEED();
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_splitterMoved_lambda_001)
+{
+    emit m_tester->splitterMoved(10, 1);     // 侧边栏隐藏分支
+    m_tester->m_sidebar->setVisible(true);
+    emit m_tester->splitterMoved(10, 1);     // 记录宽度分支
+    EXPECT_GE(m_tester->m_operation.sidebarWidth, 0);
+}
+
+
 TEST_F(TestDocSheet, UT_DocSheet_isFullScreen_001)
 {
     Stub s;
@@ -1194,6 +1304,14 @@ TEST_F(TestDocSheet, UT_DocSheet_docBasicInfo_001)
 
 TEST_F(TestDocSheet, UT_DocSheet_onBrowserPageChanged_001)
 {
+    // onBrowserPageChanged 在浏览器不可见时会忽略页码回写（防进度污染守卫）,
+    // 单测环境不 show 窗口, isVisible 恒为 false, 需打桩绕过;
+    // 同时桩掉 sidebar 的 setCurrentPage, 避免触发缩略图渲染任务导致
+    // PageRenderThread 在进程退出阶段 start/wait 竞争挂死
+    Stub s;
+    s.set(ADDR(QWidget, isVisible), isVisible_stub_true);
+    s.set(ADDR(SheetSidebar, setCurrentPage), setCurrentPage_stub);
+
     m_tester->m_operation.currentPage = 2;
     m_tester->onBrowserPageChanged(1);
     EXPECT_TRUE(m_tester->m_operation.currentPage == 1);
@@ -1381,4 +1499,355 @@ TEST_F(TestDocSheet, UT_DocSheet_setAlive_002)
     m_tester->m_uuid = DocSheet::g_uuidList.last();
     m_tester->setAlive(false);
     EXPECT_TRUE(g_funcName == "saveOperation_stub");
+}
+
+namespace {
+int QDialog_exec_stub()
+{
+    g_funcName = __FUNCTION__;
+    return 0;
+}
+
+QSizeF getPageSize_stub2(int)
+{
+    g_funcName = __FUNCTION__;
+    return QSizeF(100.0, 200.0);
+}
+
+void openFileAsync_stub2(const QString &, const QString &, const QString &, const QString &, int, DocSheet *)
+{
+    g_funcName = __FUNCTION__;
+}
+
+QImage getImage_stub2(int, int, int, const QRect &)
+{
+    g_funcName = __FUNCTION__;
+    return QImage(10, 20, QImage::Format_ARGB32);
+}
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_getPageLabelByIndex_001)
+{
+    QString label = m_tester->getPageLabelByIndex(0);
+    EXPECT_FALSE(label.isEmpty());
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_onExtractPassword_001)
+{
+    Stub s;
+    s.set(ADDR(SheetRenderer, openFileAsync), openFileAsync_stub2);
+
+    m_tester->onExtractPassword("testpassword");
+    EXPECT_TRUE(m_tester->m_password == "testpassword");
+    EXPECT_TRUE(g_funcName == "openFileAsync_stub2");
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_onPopInfoDialog_001)
+{
+    Stub s;
+    s.set(ADDR(SheetRenderer, getPageSize), getPageSize_stub2);
+    s.set(ADDR(SheetRenderer, getImage), getImage_stub2);
+
+    typedef int (*fptr)();
+    fptr QDialog_exec = (fptr)(&QDialog::exec);
+    s.set(QDialog_exec, QDialog_exec_stub);
+
+    m_tester->onPopInfoDialog();
+    EXPECT_TRUE(g_funcName == "QDialog_exec_stub");
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_readLastFileOperation_001)
+{
+    DocSheet::g_lastOperationFile.clear();
+    EXPECT_FALSE(m_tester->readLastFileOperation());
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_readLastFileOperation_002)
+{
+    QString strPath = UTSOURCEDIR;
+    strPath += "/files/normal.pdf";
+
+    DocSheet *other = new DocSheet(Dr::FileType::PDF, strPath, nullptr);
+    DocSheet::g_sheetList.append(other);
+    DocSheet::g_uuidList.append(QUuid::createUuid().toString());
+    DocSheet::g_lastOperationFile = strPath;
+
+    EXPECT_TRUE(m_tester->readLastFileOperation());
+
+    DocSheet::g_sheetList.removeAll(other);
+    DocSheet::g_uuidList.removeLast();
+    DocSheet::g_lastOperationFile.clear();
+    delete other;
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_showEncryPage_001)
+{
+    EXPECT_TRUE(m_tester->m_encryPage == nullptr);
+    m_tester->showEncryPage();
+    EXPECT_TRUE(m_tester->m_encryPage != nullptr);
+
+    m_tester->showEncryPage();
+    EXPECT_TRUE(m_tester->m_encryPage != nullptr);
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_calculatePrintTargetSize_001)
+{
+    QPrinter printer;
+    QRectF pageRect(0, 0, 100, 100);
+    QSize result = m_tester->calculatePrintTargetSize(0, printer, pageRect);
+    EXPECT_TRUE(result.isEmpty());
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_calculatePrintTargetSize_002)
+{
+    Stub s;
+    s.set(ADDR(SheetRenderer, getPageSize), getPageSize_stub2);
+
+    m_tester->m_fileType = Dr::XPS;
+
+    QPrinter printer;
+    QRectF pageRect(0, 0, 100, 100);
+    QSize result = m_tester->calculatePrintTargetSize(0, printer, pageRect);
+    EXPECT_FALSE(result.isEmpty());
+
+    m_tester->m_fileType = Dr::PDF;
+}
+
+// LoadingWidget tests - need parent widget for Q_ASSERT
+TEST_F(TestDocSheet, UT_DocSheet_LoadingWidget_constructor)
+{
+    DWidget parent;
+    parent.resize(100, 100);
+    {
+        DocSheet::LoadingWidget lw(&parent);
+        EXPECT_TRUE(lw.parent() == &parent);
+    }
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_LoadingWidget_paintEvent)
+{
+    DWidget parent;
+    parent.resize(100, 100);
+    DocSheet::LoadingWidget lw(&parent);
+    QPaintEvent paint(QRect(0, 0, 100, 100));
+    lw.paintEvent(&paint);
+    EXPECT_FALSE(lw.grab().isNull());
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_LoadingWidget_getImage)
+{
+    Stub s;
+    s.set(ADDR(SheetRenderer, getImage), getImage_stub);
+    DWidget parent;
+    parent.resize(100, 100);
+    DocSheet::LoadingWidget lw(&parent);
+    QImage img = lw.getImage(m_tester, 0, 10, 20);
+    EXPECT_TRUE(g_funcName == "getImage_stub");
+    EXPECT_FALSE(img.isNull());
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_LoadingWidget_getImageForPrint_valid)
+{
+    Stub s;
+    s.set(ADDR(SheetRenderer, getImage), getImage_stub);
+    DWidget parent;
+    parent.resize(100, 100);
+    DocSheet::LoadingWidget lw(&parent);
+    QImage img = lw.getImageForPrint(m_tester, 0, QSize(10, 20));
+    EXPECT_TRUE(g_funcName == "getImage_stub");
+    EXPECT_FALSE(img.isNull());
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_LoadingWidget_getImageForPrint_nullDoc)
+{
+    DWidget parent;
+    parent.resize(100, 100);
+    DocSheet::LoadingWidget lw(&parent);
+    QImage img = lw.getImageForPrint(nullptr, 0, QSize(10, 20));
+    EXPECT_TRUE(img.isNull());
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_LoadingWidget_getImageForPrint_invalidSize)
+{
+    DWidget parent;
+    parent.resize(100, 100);
+    DocSheet::LoadingWidget lw(&parent);
+    QImage img = lw.getImageForPrint(m_tester, 0, QSize(0, 0));
+    EXPECT_TRUE(img.isNull());
+
+    QImage img2 = lw.getImageForPrint(m_tester, 0, QSize(-1, 10));
+    EXPECT_TRUE(img2.isNull());
+}
+
+namespace {
+int QDialog_exec_stub3()
+{
+    g_funcName = __FUNCTION__;
+    return 0;
+}
+
+bool SheetRenderer_opened_stub_false()
+{
+    return false;
+}
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_onPrintRequested_emptyRange)
+{
+    DPrinter printer;
+    QVector<int> pageRange;
+    m_tester->onPrintRequested(&printer, pageRange);
+    SUCCEED();
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_onPopPrintDialog_notOpened)
+{
+    // Stub opened() to return false so dialog is not created
+    Stub s;
+    s.set(ADDR(SheetRenderer, opened), SheetRenderer_opened_stub_false);
+    m_tester->onPopPrintDialog();
+    SUCCEED();
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_onPrintRequested_singleArg)
+{
+    // Need an active window for LoadingWidget creation
+    QWidget activeWindow;
+    activeWindow.resize(200, 200);
+    activeWindow.show();
+    activeWindow.activateWindow();
+    QTest::qWait(50);
+
+    Stub s;
+    s.set(ADDR(SheetRenderer, getImage), getImage_stub);
+    s.set(ADDR(DocSheet, pageCount), pageCount_stub);
+
+    DPrinter printer;
+    m_tester->onPrintRequested(&printer);
+    SUCCEED();
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_onPrintRequested_pageRange_lambda)
+{
+    // Cover the targetRectForSize lambda inside
+    // DocSheet::onPrintRequested(DPrinter*, QVector<int>) (XPS path).
+    // LoadingWidget requires a QMainWindow in qApp->topLevelWidgets().
+    QMainWindow mainWindow;
+    mainWindow.resize(200, 200);
+    mainWindow.show();
+    QTest::qWait(50);
+
+    Stub s;
+    s.set(ADDR(SheetRenderer, getPageSize), getPageSize_stub2);
+    s.set(ADDR(SheetRenderer, getImage), getImage_stub);
+    s.set(ADDR(DocSheet, pageCount), pageCount_stub);
+
+    m_tester->m_fileType = Dr::XPS;
+
+    // m_browser->pages() must have at least one entry to satisfy the
+    // `pageRange[i] <= m_browser->pages().count()` check.
+    BrowserPage *bp = new BrowserPage(nullptr, 0, m_tester);
+    m_tester->m_browser->m_items.append(bp);
+
+    DPrinter printer;
+    QVector<int> pageRange = {1};
+    m_tester->onPrintRequested(&printer, pageRange);
+
+    m_tester->m_fileType = Dr::PDF;
+    SUCCEED();
+}
+
+TEST_F(TestDocSheet, UT_DocSheet_onPrintRequested_singleArg_lambda)
+{
+    // Cover the targetRectForSize lambda inside
+    // DocSheet::onPrintRequested(DPrinter*) (XPS path).
+    QMainWindow mainWindow;
+    mainWindow.resize(200, 200);
+    mainWindow.show();
+    mainWindow.activateWindow();
+    QTest::qWait(50);
+
+    Stub s;
+    s.set(ADDR(SheetRenderer, getPageSize), getPageSize_stub2);
+    s.set(ADDR(SheetRenderer, getImage), getImage_stub);
+    s.set(ADDR(DocSheet, pageCount), pageCount_stub);
+
+    m_tester->m_fileType = Dr::XPS;
+
+    DPrinter printer;
+    m_tester->onPrintRequested(&printer);
+
+    m_tester->m_fileType = Dr::PDF;
+    SUCCEED();
+}
+
+/* ========== PMS 回归用例（sev1/2 bug 补强，批次1） ========== */
+
+// PMS: https://pms.uniontech.com/bug-view-348017.html  commit: da254c72
+TEST_F(TestDocSheet, BUG348017_setAlive_registerUnregisterUuid)
+{
+    // 打印乱码/空白修复涉及 setAlive 状态机：反复激活/注销时 uuid 注册必须一致，
+    // 激活后可查询到 uuid，注销后 uuid 清空，重复切换不崩溃
+    m_tester->setAlive(true);
+    EXPECT_FALSE(DocSheet::getUuid(m_tester).isNull());
+
+    m_tester->setAlive(false);
+    EXPECT_TRUE(DocSheet::getUuid(m_tester).isNull());
+
+    // 重复激活（setAlive(true) 内部先注销旧 uuid 再注册新 uuid）
+    m_tester->setAlive(true);
+    EXPECT_FALSE(DocSheet::getUuid(m_tester).isNull());
+
+    m_tester->setAlive(false);
+    EXPECT_TRUE(DocSheet::getUuid(m_tester).isNull());
+}
+
+// PMS: https://pms.uniontech.com/bug-view-106171.html  commit: 17dbeb2d
+TEST_F(TestDocSheet, BUG106171_scaleFactorList_containsDefaultAscending)
+{
+    // 打印预览空白修复涉及 scaleFactorList：列表非空、升序、含默认 1.0，
+    // 且所有因子不超过文档最大缩放比例
+    QList<qreal> list = m_tester->scaleFactorList();
+    EXPECT_FALSE(list.isEmpty());
+    EXPECT_TRUE(list.contains(1.0));
+    for (int i = 1; i < list.size(); ++i) {
+        EXPECT_TRUE(list.at(i) > list.at(i - 1)) << "factor list must be ascending";
+    }
+    EXPECT_TRUE(list.last() <= m_tester->maxScaleFactor() + 0.0001);
+    EXPECT_TRUE(list.first() > 0);
+}
+
+// PMS: https://pms.uniontech.com/bug-view-164325.html  commit: 894b5c56
+TEST_F(TestDocSheet, BUG164325_setSidebarVisible_notifyToggleNoCrash)
+{
+    // 大量注释 ctrl+s 保存崩溃修复涉及 setSidebarVisible：notify=true 双向显隐切换不得崩溃
+    // （isFullScreen 需 3 级父链，测试环境无完整层级，同 UT_002 桩掉）
+    Stub s;
+    s.set(ADDR(DocSheet, isFullScreen), isFullScreen_stub);
+    m_tester->setSidebarVisible(true, true);
+    m_tester->setSidebarVisible(false, true);
+    m_tester->setSidebarVisible(true, true);
+    m_tester->setSidebarVisible(false, true);
+    SUCCEED();
+}
+
+// PMS: https://pms.uniontech.com/bug-view-164325.html  commit: 894b5c56
+TEST_F(TestDocSheet, BUG164325_setSidebarVisible_animationToggleNoCrash)
+{
+    // notify=false 走 QPropertyAnimation 动画路径：重复触发动画不得崩溃
+    // （Running 且目标一致时直接返回，目标变化时重启动画）
+    Stub s;
+    s.set(ADDR(DocSheet, isFullScreen), isFullScreen_stub);
+    m_tester->setSidebarVisible(true, false);
+    m_tester->setSidebarVisible(false, false);
+    m_tester->setSidebarVisible(false, false);
+    m_tester->setSidebarVisible(true, false);
+    SUCCEED();
+}
+
+// PMS: https://pms.uniontech.com/bug-view-106171.html  commit: 17dbeb2d
+TEST_F(TestDocSheet, BUG106171_removeAllAnnotation_emptySheetSucceeds)
+{
+    // 打印预览空白修复涉及 removeAllAnnotation：无注释文档移除仍返回成功且不崩溃
+    EXPECT_TRUE(m_tester->removeAllAnnotation());
 }

@@ -1,5 +1,5 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2019 - 2026 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2023 -2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -60,6 +60,8 @@ public:
 
     QImage render(int width, int height, const QRect &slice = QRect()) const override;
 
+    QVector<QRectF> imageObjectRects(int width, int height) const override;
+
     Link getLinkAtPoint(const QPointF &point) override;
 
     bool hasWidgetAnnots() const override;
@@ -117,6 +119,8 @@ public:
     Outline outline() const override;
 
     Properties properties() const override;
+
+    QString fileIdentifier() const override;
 
     static PDFDocument *loadDocument(const QString &filePath, const QString &password, deepin_reader::Document::Error &error);
 

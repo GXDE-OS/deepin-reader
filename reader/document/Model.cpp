@@ -6,6 +6,9 @@
 #ifdef XPS_SUPPORT_ENABLED
 #include "XpsDocumentAdapter.h"
 #endif
+#ifdef OFD_SUPPORT_ENABLED
+#include "OfdModel.h"
+#endif
 #include "PDFModel.h"
 #include "DjVuModel.h"
 #include "dpdfannot.h"
@@ -56,7 +59,14 @@ static int calculateTimeout(qint64 sizeInMB, int baseTimeout, int perMbTimeout) 
 
 static QString getHtmlToPdfPath() {
 
-    QString path = QString(INSTALL_PREFIX) + "/lib/deepin-reader/htmltopdf";
+    // Check the actual install libdir first (multiarch-aware, e.g. lib/x86_64-linux-gnu)
+    QString path = QString(INSTALL_PREFIX) + "/" + INSTALL_LIBDIR + "/deepin-reader/htmltopdf";
+    if (QFile::exists(path)) {
+        qCDebug(appLog) << "Found htmltopdf in INSTALL_LIBDIR: " << path;
+        return path;
+    }
+
+    path = QString(INSTALL_PREFIX) + "/lib/deepin-reader/htmltopdf";
     if (QFile::exists(path)) {
         qCDebug(appLog) << "Found htmltopdf in INSTALL_PREFIX: " << path;
         return path;
@@ -115,6 +125,11 @@ deepin_reader::Document *deepin_reader::DocumentFactory::getDocument(const int &
     } else if (Dr::XPS == fileType) {
         qCDebug(appLog) << "Handling XPS document";
         document = deepin_reader::XpsDocumentAdapter::loadDocument(filePath, error);
+#endif
+#ifdef OFD_SUPPORT_ENABLED
+    } else if (Dr::OFD == fileType) {
+        qCDebug(appLog) << "Handling OFD document";
+        document = deepin_reader::OfdDocument::loadDocument(filePath, error);
 #endif
     } else if (Dr::DOCX == fileType) {
         qCDebug(appLog) << "Starting DOCX document conversion process";

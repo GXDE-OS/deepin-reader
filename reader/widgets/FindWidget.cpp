@@ -1,4 +1,4 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
+// Copyright (C) 2019 ~ 2026 Uniontech Software Technology Co.,Ltd.
 // SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -117,7 +117,9 @@ void FindWidget::initWidget()
     qCDebug(appLog) << "Initializing find widget controls";
     m_pSearchEdit = new DSearchEdit(this);
     m_pSearchEdit->setObjectName("findSearchEdit_P");
+    m_pSearchEdit->setAccessibleName("Form_findSearchEdit_P");
     m_pSearchEdit->lineEdit()->setObjectName("findSearchEdit");
+    m_pSearchEdit->lineEdit()->setAccessibleName("DLineEditChildLineEdit");
     m_pSearchEdit->lineEdit()->setFocusPolicy(Qt::StrongFocus);
     connect(m_pSearchEdit, &DSearchEdit::returnPressed, this, &FindWidget::onSearchStart);
     connect(m_pSearchEdit, &DSearchEdit::textChanged, this, &FindWidget::onTextChanged);
@@ -125,6 +127,7 @@ void FindWidget::initWidget()
 
     m_findPrevButton = new DIconButton(DStyle::SP_ArrowUp, this);
     m_findPrevButton->setObjectName("SP_ArrowUpBtn");
+    m_findPrevButton->setAccessibleName("FindPrevButton");
     m_findPrevButton->setToolTip(tr("Previous"));
     m_findPrevButton->setIconSize(QSize(12, 12));
     m_findPrevButton->setDisabled(true);
@@ -132,6 +135,7 @@ void FindWidget::initWidget()
 
     m_findNextButton = new DIconButton(DStyle::SP_ArrowDown, this);
     m_findNextButton->setObjectName("SP_ArrowDownBtn");
+    m_findNextButton->setAccessibleName("FindNextButton");
     m_findNextButton->setToolTip(tr("Next"));
     m_findNextButton->setIconSize(QSize(12, 12));
     m_findNextButton->setDisabled(true);

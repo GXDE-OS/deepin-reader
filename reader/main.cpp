@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -8,6 +8,7 @@
 #include "accessible.h"
 #include "Utils.h"
 #include "DBusObject.h"
+#include "Database.h"
 #include "ddlog.h"
 #include "logger.h"
 
@@ -21,7 +22,9 @@
 #include <QScreen>
 #include <QAccessible>
 #include <QDebug>
+#include <QFileInfo>
 #include <QFontDatabase>
+#include <QSet>
 
 DGUI_USE_NAMESPACE
 DWIDGET_USE_NAMESPACE
@@ -105,6 +108,77 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    // 启动时清理失效的状态记录
+    Database::instance()->cleanupOrphanStates();
+
+    // 这是第一个实例（没有其他 deepin-reader 在运行），恢复上次的标签页组
+    // 不管命令行是否指定了文件，都恢复之前的标签页
+    // 注意：当前仅恢复 windowIndex=0 的标签页组（多窗口场景的完整恢复待后续优化）
+    QString initialActiveFile;
+    {
+        int savedActiveIndex = 0;
+        QStringList restoredFiles = Database::instance()->readTabGroup(0, savedActiveIndex);
+        // 过滤掉不存在或不可读的文件
+        QStringList validRestored;
+        for (const QString &filePath : restoredFiles) {
+            QFileInfo fi(filePath);
+            if (fi.exists() && fi.isReadable())
+                validRestored.append(filePath);
+        }
+
+        if (!validRestored.isEmpty()) {
+            // 将命令行参数中的 URL 转为本地路径
+            QStringList localArguments;
+            for (const QString &arg : arguments) {
+                QUrl url(arg);
+                if (url.isLocalFile())
+                    localArguments.append(url.toLocalFile());
+                else
+                    localArguments.append(arg);
+            }
+
+            // 合并文件列表：保留历史标签页及其拖拽后的顺序，仅追加新打开的文件
+            // 这样重新打开相同文件时能保持上次的标签顺序；打开新文件时历史不会丢失
+            QStringList allFiles = validRestored;
+            QSet<QString> restoredSet;
+            for (const QString &path : validRestored)
+                restoredSet.insert(path);
+            int newFileCount = 0;
+            for (const QString &fp : localArguments) {
+                if (QFile::exists(fp) && !restoredSet.contains(fp)) {
+                    allFiles.append(fp);
+                    newFileCount++;
+                }
+            }
+            arguments = allFiles;
+
+            // 计算需要激活的标签页：
+            // - 用户指定了文件时，激活用户指定的第一个有效文件（优先响应用户意图）
+            // - 用户未指定文件时，恢复上次激活的标签页（按保存时的路径定位）
+            if (!localArguments.isEmpty()) {
+                for (const QString &fp : localArguments) {
+                    if (QFile::exists(fp) && restoredSet.contains(fp)) {
+                        initialActiveFile = fp;
+                        break;
+                    }
+                }
+                // 指定的文件不在历史中（新追加的），激活最后一个新文件
+                if (initialActiveFile.isEmpty() && newFileCount > 0) {
+                    initialActiveFile = allFiles.last();
+                }
+            } else if (savedActiveIndex >= 0 && savedActiveIndex < restoredFiles.size()) {
+                QString savedActivePath = restoredFiles.at(savedActiveIndex);
+                if (restoredSet.contains(savedActivePath))
+                    initialActiveFile = savedActivePath;
+            }
+
+            int existingCount = allFiles.size() - newFileCount;
+            qCInfo(appLog) << "Restoring" << existingCount << "tabs from last session"
+                           << "+" << newFileCount << "new files"
+                           << "active:" << initialActiveFile;
+        }
+    }
+
     QAccessible::installFactory(accessibleFactory);
 
     //Dtk自动保存主题
@@ -124,6 +198,12 @@ int main(int argc, char *argv[])
     MainWindow *w = MainWindow::createWindow(arguments);
     w->winId();
     qApp->setAttribute(Qt::AA_ForceRasterWidgets, false);
+
+    // 恢复上次激活的标签页（需在事件循环启动前设置，以覆盖 insertSheet 的延时 setCurrentIndex）
+    if (!initialActiveFile.isEmpty()) {
+        w->setInitialActiveFile(initialActiveFile);
+    }
+
     w->show();
 
     qCDebug(appLog) << __FUNCTION__ << "主窗口已创建并显示";

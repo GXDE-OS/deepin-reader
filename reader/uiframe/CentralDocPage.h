@@ -1,5 +1,5 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2019 - 2026 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -125,6 +125,13 @@ public:
      * @return
      */
     QList<DocSheet *> getSheets();
+
+    /**
+     * @brief setActiveTabByFilePath
+     * 设置需要激活的标签页（按文件路径），用于批量打开后恢复上次的激活位置
+     * @param filePath 文件路径
+     */
+    void setActiveTabByFilePath(const QString &filePath);
 
     /**
      * @brief getCurSheet
@@ -281,6 +288,13 @@ signals:
      * 请求关闭当前窗体
      */
     void sigNeedClose();
+
+    /**
+     * @brief sigShowRestoreTip
+     * 请求显示恢复阅读位置提示条
+     * @param sheet 发出请求的文档
+     */
+    void sigShowRestoreTip(DocSheet *sheet);
 
     /**
      * @brief sigNeedClose

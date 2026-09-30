@@ -1,5 +1,5 @@
 // Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -10,6 +10,7 @@
 
 #include <QMouseEvent>
 #include <QStandardItemModel>
+#include <optional>
 
 DWIDGET_USE_NAMESPACE
 namespace deepin_reader {
@@ -79,6 +80,18 @@ public:
      */
     void handleOpenSuccess();
 
+    /**
+     * @brief getExpandedSections 获取当前展开节点的标题路径列表
+     * @return 展开节点的标题路径（如 "1.概述" 或 "1.概述/1.1 背景"）
+     */
+    QStringList getExpandedSections() const;
+
+    /**
+     * @brief restoreExpandedSections 恢复目录树展开状态
+     * @param sections 展开节点的标题路径列表
+     */
+    void restoreExpandedSections(const QStringList &sections);
+
 protected:
     /**
      * @brief resizeEvent
@@ -126,6 +139,8 @@ private slots:
     void onFontChanged(const QFont &font);
 
 private:
+    std::optional<QStringList> m_pendingExpandedSections;
+    bool m_populating = false;
     /**
      * @brief parseCatalogData
      * 解析文档目录数据

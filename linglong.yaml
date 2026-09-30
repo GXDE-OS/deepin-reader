@@ -7,80 +7,116 @@ version: "1"
 package:
   id: org.deepin.reader
   name: "deepin-reader"
-  version: 6.5.57.1
+  version: 6.6.2.1
   kind: app
   description: |
     reader for deepin os.
 
 base: org.deepin.base/25.2.2
-runtime: org.deepin.runtime.webengine/25.2.2
+runtime: org.deepin.runtime.webengine/6.7.0
+
+sources:
+  - kind: git
+    url:  https://github.com/linuxdeepin/rofd.git
+    commit: 96d9f8b8a1075ab57dc496da90d2891731003129
 
 command:
   - deepin-reader
 
 build: |
-  # 下载和安装依赖
-  apt -y install --download-only qt6-base-dev qt6-base-dev-tools qt6-tools-dev libdtk6widget-dev libspectre-dev libdjvulibre-dev libtiff-dev libjpeg-dev libicu-dev libpng-dev zlib1g-dev liblcms2-dev libopenjp2-7-dev libfreetype6-dev libgtest-dev libchardet-dev qt6-webengine-dev qt6-5compat-dev libdtk6gui-dev libdtk6core-dev qt6-svg-dev pandoc libgxps-dev libcairo2-dev libglib2.0-dev
-  bash ./install_dep /var/cache/apt/archives "$PREFIX"
+  # ================= 从源码构建 rofd（OFD 支持库） =================
+  # 源码来自上方 sources 段；crates.io 依赖由 Cargo.lock 固定，构建机需可访问 github 与 crates.io。
+  # cargo/rustc 由 buildext.apt.build_depends 声明式安装（base 镜像自带 gcc/g++/cmake/make，无需声明）。
+  ROFD_SRC=""
+  for d in /project/linglong/sources/rofd /project/sources/rofd /project/rofd /source/rofd; do
+      if [ -f "$d/Cargo.toml" ] && [ -f "$d/crates/rofd-ffi/include/rofd.h" ]; then ROFD_SRC="$d"; break; fi
+  done
+  if [ -z "$ROFD_SRC" ]; then
+      ROFD_SRC=$(find /project -maxdepth 8 -type f -path "*/crates/rofd-ffi/include/rofd.h" 2>/dev/null | head -1 | sed 's|/crates/rofd-ffi/include/rofd.h$||')
+  fi
+  if [ ! -f "$ROFD_SRC/Cargo.toml" ] || [ ! -f "$ROFD_SRC/crates/rofd-ffi/include/rofd.h" ]; then
+      echo "ERROR: 未找到 rofd 源码，sources 拉取失败？检查构建机对 github.com 的访问权限" >&2
+      exit 1
+  fi
+  echo ">>> rofd 源码: $ROFD_SRC (commit: $(git -C $ROFD_SRC rev-parse --short HEAD 2>/dev/null || echo unknown))"
+  # 增量构建会复用容器 /tmp，旧产物指纹可能指向旧源码路径，先清理
+  rm -rf /tmp/rofd-build
+  # 仅构建 OFD 支持所需的 C ABI 库（rofd-ffi），不构建 rofd Qt 应用（无需 QML 相关依赖）
+  # 在子 shell 中 cd 进仓库再执行：cargo 从 cwd 向上查找 .cargo/config.toml（离线 vendor 配置）
+  # 依赖它生效；--manifest-path 不参与配置查找，在 /project 下跑会走 crates.io 导致 CI 无外网时失败。
+  # 必须用子 shell：否则 cwd 停留在 rofd 目录，后续 build/ 与 cmake .. 等相对路径全部错位
+  (cd "$ROFD_SRC" && CARGO_TARGET_DIR=/tmp/rofd-build cargo build --release -p rofd-ffi)
+  # 安装到与 librofd-ffi deb 相同的布局（soname 由 rofd build.rs 固定为 librofd_ffi.so.0，
+  # 主工程 CMake 的 find_path/find_library 依赖这些路径）
+  ROFD_FFI_VER=$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROFD_SRC/crates/rofd-ffi/Cargo.toml" | head -1)
+  install -d -m 0755 $PREFIX/lib/${TRIPLET} $PREFIX/include
+  install -m 0755 /tmp/rofd-build/release/librofd_ffi.so $PREFIX/lib/${TRIPLET}/librofd_ffi.so.$ROFD_FFI_VER
+  ln -sf librofd_ffi.so.$ROFD_FFI_VER $PREFIX/lib/${TRIPLET}/librofd_ffi.so.0
+  ln -sf librofd_ffi.so.0            $PREFIX/lib/${TRIPLET}/librofd_ffi.so
+  install -m 0644 "$ROFD_SRC/crates/rofd-ffi/include/rofd.h" $PREFIX/include/rofd.h
 
-  # 设置INCLUDEPATH为引入的CFLAGS环境变量获取的路径
-  sed -i '33i INCLUDEPATH += $$INCPATHS' 3rdparty/deepin-pdfium/src/src.pro
-  sed -i '35i INCLUDEPATH += $$INCPATHS' htmltopdf/htmltopdf.pro
-  sed -i '2i INCLUDEPATH += $$INCPATHS' reader/reader.pro
-  sed -i 's|/usr/lib/qt6/bin/lrelease|lrelease|g' translate_generation.sh
+  # ================= pandoc 数据目录 =================
+  # reader 以 --data-dir=${prefix}/share/pandoc/data 调用 pandoc；buildext.apt.depends 合并产物
+  # 时仅收集 bin/sbin/lib，share/ 会被丢弃，故在构建期从 /usr/share 复制随包分发
+  # （pandoc 本体经 buildext.apt.depends 声明式分发，其 libyaml/liblua 闭包由 apt 自动解析）
+  if [ ! -d /usr/share/pandoc/data ]; then
+      echo "ERROR: /usr/share/pandoc/data 不存在，pandoc 包布局与预期不符" >&2
+      exit 1
+  fi
+  mkdir -p ${PREFIX}/share
+  cp -a /usr/share/pandoc ${PREFIX}/share/pandoc
 
-  # 构建
-  VERSION=$(head -1 debian/changelog | awk -F'[()]' '{print $2}')
-  mkdir -p  build && cd build
-  qmake -set APP_INSTALL_LIBS ${PREFIX}/lib/${TRIPLET}
-  qmake "VERSION=${VERSION}" \
-    "PREFIX=${PREFIX}" \
-    "LINGLONG_BUILD_ON=1" \
-    "INCPATHS=$(echo "$CFLAGS" | sed 's/-I//g')" \
-    "LIB_INSTALL_DIR=${PREFIX}/lib/${TRIPLET}" \
-    "INSTALL_ROOT=${PREFIX}" \
-    ../deepin_reader.pro
-  make -j`nproc`
+  # ================= 主工程（CMake） =================
+  # Qt/DTK 开发文件由 runtime 层提供（挂载于 /runtime），经 CMAKE_PREFIX_PATH 探测：
+  # 构建期与运行期使用同一套 runtime Qt（含 waylandclient），不再需要打包 apt 的
+  # libqt6waylandclient6 来规避 apt Qt 与 runtime Qt 混用导致的私有 ABI 链接失败。
+  # pkg-config 探测的第三方 -dev 库由 buildext.apt.build_depends 安装到 /usr；
+  # 显式补充 PKG_CONFIG_PATH，确保 /usr 与 $PREFIX 下的 .pc 无论环境默认值如何均可见。
+  export PKG_CONFIG_PATH="${PREFIX}/lib/${TRIPLET}/pkgconfig:/usr/lib/${TRIPLET}/pkgconfig:/usr/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+  rm -rf build && mkdir -p build && cd build
+  cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=${PREFIX} \
+    -DCMAKE_INSTALL_LIBDIR=lib/${TRIPLET} \
+    -DCMAKE_PREFIX_PATH="${PREFIX};/runtime" \
+    -DROFD_ROOT=${PREFIX} \
+    -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,${PREFIX}/lib/${TRIPLET}:/runtime/lib/${TRIPLET}:/runtime/lib" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath-link,${PREFIX}/lib/${TRIPLET}:/runtime/lib/${TRIPLET}:/runtime/lib"
+  make -j$(nproc)
   make install > ../install.log 2>&1
-  cd ..
 
-  # 项目生成应用名和动态隐式加载的依赖库，ldd无法找到的其他库
-  LDD_FILES=(
-    deepin-reader
-    ../lib/deepin-reader/htmltopdf
-    pandoc
-    libdeepin-pdfium-reader.so
-    # 定制插件不存在
-    libzpdcallback.so
-  )
-
-  # 生成.install 文件
-  ID_VALUE=$(awk -F ': ' '/^  id: / {print $2}' linglong.yaml)
-  bash ./deploy_dep "${LDD_FILES[@]}"
-
-  # lib/deepin-reader 文件添加到 install 文件
-  for OTHER in "${PREFIX}"/lib/deepin-reader/*; do
-      if [[ -f "$OTHER" ]]; then
-          echo "$OTHER" >> "${ID_VALUE}.install"
-      fi
-  done
-
-  EXEC_FILES=(
-    pandoc
-  )
-  # 添加额外依赖进程到 install 文件
-  for EXEFILE in "${PREFIX}/bin"/${EXEC_FILES[@]}*; do
-    echo "$EXEFILE" >> "${ID_VALUE}.install"
-  done
-
-  # pandoc data 文件添加到 install 文件
-  find "${PREFIX}/share/pandoc/" -type f -o -type d >> "${ID_VALUE}.install"
-
-  # 添加帮助手册到 install
-  find $PREFIX/share/deepin-manual/manual-assets/application/deepin-reader >> "${ID_VALUE}.install"
-
-# allow apt download in build and do apt update
+# 依赖声明：构建期依赖安装进构建容器（/usr）；depends 在构建完成后安装并仅合并
+# bin/sbin/lib 进产物（share/ 不合并，需要的文件须在 build 中显式复制）。
+# 分类依据（base/runtime 包清单核对）：
+#   - base 已提供运行库：libjbig2dec0、liblcms2-2、libopenjp2-7、libfreetype6、libcairo2、
+#     libglib2.0-0、libjpeg62-turbo —— 不进 depends（depends 对 base 已有包是无效 no-op）；
+#   - runtime 层提供 Qt/DTK 全套开发包（qt6-*-dev、libdtk6*-dev），经 /runtime 前缀探测，
+#     不重复列入 build_depends；gcc/cmake/make 由 base 镜像自带，pkg-config 由 runtime 提供；
+#   - 旧列表中的 libspectre-dev/libicu-dev/libgtest-dev 工程内无对应探测，属冗余，剔除。
 buildext:
   apt:
     build_depends:
-      - libc6
+      # rofd（Rust）构建工具链，构建容器内不预置
+      - cargo
+      - rustc
+      # 构建期取 /usr/share/pandoc 数据目录随包复制（见 build 段说明）
+      - pandoc
+      # pkg-config 探测的第三方开发库（.pc + 头文件）
+      - libjbig2dec0-dev     # rofd 默认开启的 jbig2 特性
+      - libdjvulibre-dev     # reader: pkg_check_modules(ddjvuapi)
+      - libgxps-dev          # reader: XPS(libgxps cairo glib gobject freetype2)
+      - libcairo2-dev        # reader: XPS/OFD 的 cairo 探测
+      - libglib2.0-dev       # reader: glib-2.0/gobject-2.0 探测
+      - libfreetype6-dev     # reader: XPS 的 freetype2 探测
+      - libjpeg-dev          # reader: pkg_check_modules(libjpeg)
+      - libchardet-dev       # 3rdparty/deepin-pdfium（vendored）
+      - liblcms2-dev         # 3rdparty/deepin-pdfium（vendored）
+      - libopenjp2-7-dev     # 3rdparty/deepin-pdfium（vendored）
+      - libicu-dev           # 3rdparty/deepin-pdfium：pdfium 源码直接包含 <unicode/uchar.h>，
+                             # 无 pkg-config 探测故须显式声明
+    depends:
+      # base 与 runtime 均不提供、必须随包分发的运行时依赖
+      - pandoc               # 文档转换子进程（libyaml-0-2/liblua5.3-0 等闭包由 apt 自动解析）
+      - libdjvulibre21       # reader DT_NEEDED libdjvulibre.so.21
+      - libgxps2             # reader DT_NEEDED libgxps.so.2
+      - libchardet1          # 3rdparty/deepin-pdfium DT_NEEDED libchardet.so.1

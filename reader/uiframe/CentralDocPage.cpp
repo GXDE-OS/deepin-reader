@@ -1,4 +1,4 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
+// Copyright (C) 2019 - 2026 Uniontech Software Technology Co.,Ltd.
 // SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -24,6 +24,7 @@
 #include <QDesktopServices>
 #include <QScreen>
 #include <QUrl>
+#include <QPointer>
 #include <QDesktopServices>
 #include <QScrollBar>
 #include <QStackedLayout>
@@ -190,7 +191,7 @@ void CentralDocPage::onSheetFileChanged(DocSheet *sheet)
         DBusObject::instance()->unBlockShutdown();
     }
 
-    if (nullptr == sheet && sheet != getCurSheet())
+    if (nullptr == sheet || sheet != getCurSheet())
         return;
 
     emit sigCurSheetChanged(sheet);
@@ -199,7 +200,7 @@ void CentralDocPage::onSheetFileChanged(DocSheet *sheet)
 void CentralDocPage::onSheetOperationChanged(DocSheet *sheet)
 {
     qCInfo(appLog) << "onSheetOperationChanged";
-    if (nullptr == sheet && sheet != getCurSheet())
+    if (nullptr == sheet || sheet != getCurSheet())
         return;
 
     emit sigCurSheetChanged(sheet);
@@ -226,22 +227,27 @@ void CentralDocPage::addFileAsync(const QString &filePath)
         }
     }
 
+    // 打开新文件前，保存当前 sheet 的阅读状态
+    DocSheet *curSheet = getCurSheet();
+    if (curSheet && curSheet->opened()) {
+        curSheet->saveCurrentViewState();
+    }
+
     Dr::FileType fileType = Dr::fileType(filePath);
+    bool supported = Dr::PDF == fileType || Dr::DJVU == fileType || Dr::DOCX == fileType;
 #ifdef XPS_SUPPORT_ENABLED
-    if (Dr::PDF != fileType && Dr::DJVU != fileType && Dr::DOCX != fileType && Dr::XPS != fileType) {
-#else
-    if (Dr::PDF != fileType && Dr::DJVU != fileType && Dr::DOCX != fileType) {
+    supported = supported || Dr::XPS == fileType;
 #endif
+#ifdef OFD_SUPPORT_ENABLED
+    supported = supported || Dr::OFD == fileType;
+#endif
+    if (!supported) {
         if (pathControl(filePath)) {
             qCInfo(appLog) << "没有权限读取该文件";
             return;
         }
         showTips(m_stackedLayout->currentWidget(), tr("The format is not supported"), 1);
-#ifdef XPS_SUPPORT_ENABLED
-        qCWarning(appLog) << "不支持该文件格式!（仅支持PDF、DJVU、DOCX、XPS）文件格式:" << fileType << "(Unknown = 0, PDF = 1, DJVU = 2, DOCX = 3, PS  = 4, DOC = 5, PPTX = 6, XPS = 7)";
-#else
-        qCWarning(appLog) << "不支持该文件格式!（仅支持PDF、DJVU、DOCX）文件格式:" << fileType << "(Unknown = 0, PDF = 1, DJVU = 2, DOCX = 3, PS  = 4, DOC = 5, PPTX = 6, XPS = 7)";
-#endif
+        qCWarning(appLog) << "不支持该文件格式!（仅支持PDF、DJVU、DOCX、XPS、OFD）文件格式:" << fileType << "(Unknown = 0, PDF = 1, DJVU = 2, DOCX = 3, PS  = 4, DOC = 5, PPTX = 6, XPS = 7, OFD = 8)";
         return;
     }
 
@@ -251,6 +257,8 @@ void CentralDocPage::addFileAsync(const QString &filePath)
     connect(sheet, SIGNAL(sigOperationChanged(DocSheet *)), this, SLOT(onSheetOperationChanged(DocSheet *)));
     connect(sheet, SIGNAL(sigFindOperation(const int &)), this, SIGNAL(sigFindOperation(const int &)));
     connect(sheet, &DocSheet::sigFileOpened, this, &CentralDocPage::onOpened);
+    // 监听恢复阅读位置提示信号，转发给 Central 显示
+    connect(sheet, &DocSheet::sigShowRestoreTip, this, &CentralDocPage::sigShowRestoreTip);
 
     m_stackedLayout->addWidget(sheet);
 
@@ -302,12 +310,25 @@ void CentralDocPage::onOpened(DocSheet *sheet, deepin_reader::Document::Error er
     sheet->defaultFocus();
 }
 
+
 void CentralDocPage::onTabChanged(DocSheet *sheet)
 {
     qCInfo(appLog) << "onTabChanged";
     if (nullptr != sheet) {
         qCInfo(appLog) << "sheet is not null";
+
+        // 离开当前 sheet 前，保存其阅读状态
+        QPointer<DocSheet> prevSheet = qobject_cast<DocSheet *>(m_stackedLayout->currentWidget());
+        if (prevSheet && prevSheet != sheet && prevSheet->opened()) {
+            // 关闭前一个 sheet 的搜索框,防止切换标签后搜索串档
+            prevSheet->closeFindWidget();
+            prevSheet->saveCurrentViewState();
+        }
+
         m_stackedLayout->setCurrentWidget(sheet);
+
+        // 切换到新 sheet 后，恢复其已保存的阅读状态
+        sheet->restoreSavedViewState();
 
         sheet->defaultFocus();
     }
@@ -466,6 +487,9 @@ void CentralDocPage::enterSheet(DocSheet *sheet)
     connect(sheet, SIGNAL(sigOperationChanged(DocSheet *)), this, SLOT(onSheetOperationChanged(DocSheet *)));
     connect(sheet, SIGNAL(sigFindOperation(const int &)), this, SIGNAL(sigFindOperation(const int &)));
 
+    // 监听恢复阅读位置提示信号，转发给 Central 显示
+    connect(sheet, &DocSheet::sigShowRestoreTip, this, &CentralDocPage::sigShowRestoreTip);
+
     m_stackedLayout->addWidget(sheet);
 
     m_stackedLayout->setCurrentWidget(sheet);
@@ -508,6 +532,40 @@ QList<DocSheet *> CentralDocPage::getSheets()
 {
     qCInfo(appLog) << "getSheets";
     return m_tabBar->getSheets();
+}
+
+void CentralDocPage::setActiveTabByFilePath(const QString &filePath)
+{
+    qCInfo(appLog) << "setActiveTabByFilePath - file:" << filePath;
+    if (!m_tabBar || filePath.isEmpty())
+        return;
+
+    // 设置 m_delayIndex，使后续 onSetCurrentIndex 延时定时器激活正确的标签
+    m_tabBar->setPendingActiveFile(filePath);
+
+    int idx = m_tabBar->indexOfFilePath(filePath);
+    if (idx < 0)
+        return;
+
+    if (m_tabBar->currentIndex() != idx) {
+        // 标签栏索引不同，切换会触发 currentChanged → onTabChanged → 内容自动切换
+        m_tabBar->setCurrentIndex(idx);
+    } else {
+        // 标签栏索引已正确，但内容区可能不一致
+        // （addFileAsync 每次都调用 setCurrentWidget，导致内容区停留在最后一个文档）
+        // 此时 setCurrentIndex(idx) 不会触发 currentChanged，需要同步触发当前标签页选中文档的渲染
+        DocSheet *sheet = getSheet(filePath);
+        if (sheet && m_stackedLayout->currentWidget() != sheet) {
+            QPointer<DocSheet> prevSheet = qobject_cast<DocSheet *>(m_stackedLayout->currentWidget());
+            if (prevSheet && prevSheet != sheet && prevSheet->opened()) {
+                prevSheet->saveCurrentViewState();
+            }
+            m_stackedLayout->setCurrentWidget(sheet);
+            sheet->restoreSavedViewState();
+            sheet->defaultFocus();
+            emit sigCurSheetChanged(sheet);
+        }
+    }
 }
 
 bool CentralDocPage::saveCurrent()
@@ -659,8 +717,10 @@ void CentralDocPage::handleShortcut(const QString &s)
     if (s == Dr::key_ctrl_home) {
         qCInfo(appLog) << "s == Dr::key_ctrl_home";
         auto sheet = getCurSheet();
-        if (sheet)
+        if (sheet) {
+            sheet->dismissRestoreTip();
             sheet->jumpToFirstPage();
+        }
     }
     if (s == Dr::key_ctrl_end) {
         qCInfo(appLog) << "s == Dr::key_ctrl_end";

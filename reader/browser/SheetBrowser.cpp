@@ -1,4 +1,4 @@
-// Copyright (C) 2019 ~ 2026 Uniontech Software Technology Co.,Ltd.
+// Copyright (C) 2019 - 2026 Uniontech Software Technology Co.,Ltd.
 // SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -21,6 +21,7 @@
 #include "Utils.h"
 #include "SheetRenderer.h"
 #include "SecurityDialog.h"
+#include "EyeProtectionManager.h"
 #include "ddlog.h"
 
 #include <DMenu>
@@ -43,6 +44,9 @@
 #include <QProcess>
 #include <QTimerEvent>
 #include <QDesktopServices>
+#include <QScopedValueRollback>
+
+#include <cmath>
 
 DWIDGET_USE_NAMESPACE
 
@@ -98,6 +102,25 @@ SheetBrowser::SheetBrowser(DocSheet *parent) : DGraphicsView(parent), m_sheet(pa
     this->horizontalScrollBar()->setProperty("_d_slider_spaceLeft", 8);
     this->horizontalScrollBar()->setProperty("_d_slider_spaceRight", 8);
     this->horizontalScrollBar()->setAccessibleName("horizontalScrollBar");
+
+    // 监听护眼模式变化
+    connect(EyeProtectionManager::instance(), &EyeProtectionManager::modeChanged,
+            this, [this](EyeProtectionManager::Mode mode) {
+        Q_UNUSED(mode)
+        // 更新视口背景色
+        setBackgroundBrush(QBrush(EyeProtectionManager::instance()->viewportBackgroundColor()));
+        // 设置 viewport 背景色（视口空白区）
+        QPalette pal = viewport()->palette();
+        pal.setColor(viewport()->backgroundRole(), EyeProtectionManager::instance()->viewportBackgroundColor());
+        viewport()->setPalette(pal);
+        viewport()->update();
+    });
+
+    // 初始化护眼模式背景色
+    setBackgroundBrush(QBrush(EyeProtectionManager::instance()->viewportBackgroundColor()));
+    QPalette pal = viewport()->palette();
+    pal.setColor(viewport()->backgroundRole(), EyeProtectionManager::instance()->viewportBackgroundColor());
+    viewport()->setPalette(pal);
     
     qCDebug(appLog) << "SheetBrowser constructor completed";
 }
@@ -202,6 +225,7 @@ void SheetBrowser::init(SheetOperation &operation, const QSet<int> &bookmarks)
     m_hasLoaded = true;
     
     qCInfo(appLog) << "SheetBrowser initialized successfully, initial page:" << m_initPage;
+    qCDebug(appLog) << "init done m_initPage=" << m_initPage << "currentPage=" << operation.currentPage << "hasLoaded=" << m_hasLoaded << "scaleMode=" << operation.scaleMode;
 }
 
 void SheetBrowser::setMouseShape(const Dr::MouseShape &shape)
@@ -673,6 +697,7 @@ void SheetBrowser::onRemoveIconAnnotSelect()
 
 void SheetBrowser::onInit()
 {
+    qCDebug(appLog) << "onInit enter m_initPage=" << m_initPage << "hasLoaded=" << m_hasLoaded;
     qCDebug(appLog) << "SheetBrowser::onInit() - Starting init";
     if (1 != m_initPage) {
         setCurrentPage(m_initPage);
@@ -711,6 +736,61 @@ void SheetBrowser::jumpToOutline(const qreal &linkLeft, const qreal &linkTop, in
     else
         jump2PagePos(jumpPage, linkLeft, 0);
     qCDebug(appLog) << "SheetBrowser::jumpToOutline() - Jump to outline completed";
+}
+
+bool SheetBrowser::navigateTo(const NavigationTarget &target)
+{
+    if (!m_sheet || !target.isValid())
+        return false;
+
+    if (!target.destination) {
+        const QUrl uri = resolveNavigationUri(target.uri.toString(QUrl::FullyEncoded));
+        if (uri.isEmpty())
+            return false;
+        SecurityDialog dialog(uri.toString(QUrl::FullyEncoded), this);
+        if (dialog.exec() == DDialog::Accepted)
+            QDesktopServices::openUrl(uri);
+        return true;
+    }
+
+    const NavigationDestination &destination = *target.destination;
+    if (destination.pageIndex >= m_items.size() || !m_items.at(destination.pageIndex))
+        return false;
+
+    const SheetOperation &operation = m_sheet->operation();
+    QPointF currentPosition;
+    const int currentIndex = currentPage() - 1;
+    if (operation.scaleFactor > 0 && currentIndex >= 0 && currentIndex < m_items.size())
+        currentPosition = m_items.at(currentIndex)->mapFromScene(mapToScene(QPoint(0, 0)))
+                / operation.scaleFactor;
+
+    const auto view = navigationView(destination, m_sheet->renderer()->getPageSize(destination.pageIndex),
+                                     QSizeF(viewport()->size()), currentPosition, operation.scaleFactor,
+                                     m_sheet->maxScaleFactor(), int(operation.rotation) * 90,
+                                     operation.layoutMode == Dr::TwoPagesMode);
+    if (!view)
+        return false;
+
+    // 目标校验成功后，主动导航取代旧的恢复任务；否则页码信号会被守卫
+    // 忽略，布局稳定后还会跳回保存的锚点。目录和页面链接共用此路径。
+    m_sheet->cancelRestoreGuard();
+
+    {
+        QScopedValueRollback<bool> suppressPageChanges(m_bNeedNotifyCurPageChanged, false);
+        m_sheet->setScaleFactor(view->scale);
+        const qreal scale = m_sheet->operation().scaleFactor;
+        const QRectF scaledFocus(view->focusRect.topLeft() * scale, view->focusRect.size() * scale);
+        const QPointF scenePoint = m_items.at(destination.pageIndex)->mapRectToScene(scaledFocus).topLeft();
+        if (!std::isfinite(scenePoint.x()) || !std::isfinite(scenePoint.y()))
+            return false;
+        // Bound before converting: document coordinates need not fit in an int.
+        horizontalScrollBar()->setValue(qRound(qBound(qreal(horizontalScrollBar()->minimum()),
+                                                       scenePoint.x(), qreal(horizontalScrollBar()->maximum()))));
+        verticalScrollBar()->setValue(qRound(qBound(qreal(verticalScrollBar()->minimum()),
+                                                     scenePoint.y(), qreal(verticalScrollBar()->maximum()))));
+    }
+    curpageChanged(destination.pageIndex + 1);
+    return true;
 }
 
 void SheetBrowser::jumpToHighLight(deepin_reader::Annotation *annotation, const int index)
@@ -842,7 +922,7 @@ bool SheetBrowser::event(QEvent *event)
         }
     }
 
-    if (event->type() == QEvent::Gesture) {
+    if (event && event->type() == QEvent::Gesture) {
         // qCDebug(appLog) << "SheetBrowser::event() - Gesture event";
         return gestureEvent(reinterpret_cast<QGestureEvent *>(event));
     }
@@ -903,7 +983,8 @@ void SheetBrowser::pinchTriggered(QPinchGesture *gesture)
     if (gesture->state() == Qt::GestureFinished) {
         // qCDebug(appLog) << "SheetBrowser::pinchTriggered() - Gesture finished";
         this->setProperty("pinchgetsturing", false);
-        QTimer::singleShot(10, [this]() {
+        // 必须传 receiver=this:否则 browser 在定时器触发前被销毁时,lambda 仍会执行并写已死对象(UAF)
+        QTimer::singleShot(10, this, [this]() {
             //稍微延迟下,不然还是会引起mouse事件触发
             m_startPinch = false;
         });
@@ -1066,7 +1147,7 @@ void SheetBrowser::deform(SheetOperation &operation)
     setSceneRect(0, 0, maxWidth, maxHeight);
 
     if (page > 0 && page <= m_items.count()) {
-        qCDebug(appLog) << "SheetBrowser::deform() - Setting scroll bar value for page:" << page;
+        qCDebug(appLog) << "deform set vbar page=" << page << "y=" << m_items[page - 1]->getTopLeftPos().y();
         verticalScrollBar()->setValue(static_cast<int>(m_items[page - 1]->getTopLeftPos().y()));
         horizontalScrollBar()->setValue(static_cast<int>(m_items[page - 1]->getTopLeftPos().x()));
     }
@@ -1083,6 +1164,9 @@ void SheetBrowser::deform(SheetOperation &operation)
 
     beginViewportChange();
     qCDebug(appLog) << "SheetBrowser::deform() - Begin viewport change";
+
+    // 布局重建完成，通知外层（阅读位置恢复守卫据此判断布局稳定时机）
+    emit sigDeformed();
 }
 
 bool SheetBrowser::hasLoaded()
@@ -1093,6 +1177,7 @@ bool SheetBrowser::hasLoaded()
 
 void SheetBrowser::resizeEvent(QResizeEvent *event)
 {
+    qCDebug(appLog) << "resizeEvent hasLoaded=" << m_hasLoaded << "scaleMode=" << (m_sheet ? m_sheet->operation().scaleMode : -1) << "newsize=" << event->size();
     // qCDebug(appLog) << "SheetBrowser::resizeEvent() - Starting resize event";
     if (hasLoaded() && m_sheet->operation().scaleMode != Dr::ScaleFactorMode) {
         // qCDebug(appLog) << "SheetBrowser::resizeEvent() - Has loaded, deforming";
@@ -1705,6 +1790,7 @@ int SheetBrowser::currentScrollValueForPage()
 
 void SheetBrowser::setCurrentPage(int page)
 {
+    qCDebug(appLog) << "setCurrentPage(" << page << ") curPage=" << m_currentPage << "vbar[" << (verticalScrollBar() ? verticalScrollBar()->minimum() : -1) << (verticalScrollBar() ? verticalScrollBar()->maximum() : -1) << (verticalScrollBar() ? verticalScrollBar()->value() : -1) << "]";
     // qCDebug(appLog) << "SheetBrowser::setCurrentPage() - Setting current page to:" << page;
     if (page < 1 || page > allPages()) {
         qCWarning(appLog) << "Invalid page number:" << page << "max pages:" << allPages();
@@ -1877,6 +1963,7 @@ void SheetBrowser::dragEnterEvent(QDragEnterEvent *event)
 
 void SheetBrowser::showEvent(QShowEvent *event)
 {
+    qCDebug(appLog) << "showEvent scheduling onInit +100ms";
     // qCDebug(appLog) << "SheetBrowser::showEvent() - Showing event";
     QTimer::singleShot(100, this, SLOT(onInit()));
 
@@ -1887,13 +1974,8 @@ void SheetBrowser::showEvent(QShowEvent *event)
 void SheetBrowser::handlePrepareSearch()
 {
     qCDebug(appLog) << "Preparing search for file type:" << m_sheet->fileType();
-    
-    //目前只有PDF、DOCX和XPS开放搜索功能
-    if (m_sheet->fileType() != Dr::FileType::PDF && m_sheet->fileType() != Dr::FileType::DOCX
-#ifdef XPS_SUPPORT_ENABLED
-        && m_sheet->fileType() != Dr::FileType::XPS
-#endif
-    ) {
+
+    if (!Dr::supportsSearch(m_sheet->fileType())) {
         qCDebug(appLog) << "Search not supported for current file type";
         return;
     }
@@ -2034,6 +2116,16 @@ void SheetBrowser::jumpToPrevSearchResult()
     }
 }
 
+void SheetBrowser::hideFindWidget()
+{
+    qCDebug(appLog) << "hideFindWidget";
+    if (!m_findWidget.isNull()) {
+        m_findWidget->hide();
+        m_findWidget->deleteLater();
+        m_findWidget = nullptr;
+    }
+}
+
 void SheetBrowser::handleSearchStart()
 {
     qCDebug(appLog) << "SheetBrowser::handleSearchStart() - Handling search start";
@@ -2083,6 +2175,7 @@ void SheetBrowser::handleFindFinished(int searchcnt)
 
 void SheetBrowser::curpageChanged(int curpage)
 {
+    qCDebug(appLog) << "curpageChanged(" << curpage << ") prev=" << m_currentPage;
     qCDebug(appLog) << "SheetBrowser::curpageChanged() - Current page changed";
     if (m_currentPage != curpage) {
         m_currentPage = curpage;
@@ -2178,6 +2271,9 @@ bool SheetBrowser::jump2Link(QPointF point)
     point = translate2Local(point);
 
     Link link = m_sheet->renderer()->getLinkAtPoint(page->itemIndex(), point);
+
+    if (link.navigation)
+        return navigateTo(*link.navigation);
 
     if (link.page > 0 && link.page <= allPages()) {
         qCDebug(appLog) << "SheetBrowser::jump2Link() - Link page is greater than 0 and less than or equal to all pages";
@@ -2406,4 +2502,31 @@ TextEditShadowWidget *SheetBrowser::getNoteEditWidget() const
 {
     // qCDebug(appLog) << "SheetBrowser::getNoteEditWidget() - Getting note edit widget";
     return m_noteEditWidget;
+}
+
+float SheetBrowser::getScrollPosition()
+{
+    QScrollBar *vBar = verticalScrollBar();
+    if (!vBar || vBar->maximum() <= vBar->minimum()) {
+        return 0.0f;
+    }
+    float pos = static_cast<float>(vBar->value() - vBar->minimum())
+                / static_cast<float>(vBar->maximum() - vBar->minimum());
+    return qBound(0.0f, pos, 1.0f);
+}
+
+void SheetBrowser::restoreScrollPosition(float position)
+{
+    QScrollBar *vBar = verticalScrollBar();
+    int vmin = vBar ? vBar->minimum() : -1;
+    int vmax = vBar ? vBar->maximum() : -1;
+    int vcur = vBar ? vBar->value() : -1;
+    qCDebug(appLog) << "restoreScrollPosition(" << position << ") vbar[" << vmin << vmax << vcur << "]";
+    if (!vBar || vBar->maximum() <= vBar->minimum()) {
+        qCDebug(appLog) << "restoreScrollPosition SKIP (range not ready)";
+        return;
+    }
+    int value = vBar->minimum() + static_cast<int>(position * (vBar->maximum() - vBar->minimum()));
+    vBar->setValue(value);
+    qCDebug(appLog) << "restoreScrollPosition set value=" << value << "-> after val=" << vBar->value();
 }

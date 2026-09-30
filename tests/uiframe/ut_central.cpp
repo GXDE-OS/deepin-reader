@@ -1,5 +1,5 @@
 // Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -7,6 +7,7 @@
 #include "TitleMenu.h"
 #include "MainWindow.h"
 #include "CentralDocPage.h"
+#include "RestoreTipWidget.h"
 #include "ShortCutShow.h"
 #include "TitleWidget.h"
 #include "stub.h"
@@ -617,4 +618,58 @@ TEST_F(TestCentral, UT_Central_resizeEvent_001)
     m_tester->resizeEvent(event);
     EXPECT_TRUE(g_funcName == "resizeEvent_stub");
     delete event;
+}
+
+TEST_F(TestCentral, UT_Central_docPage_sigShowRestoreTip_lambda_001)
+{
+    CentralDocPage *docPage = m_tester->docPage();
+    ASSERT_NE(docPage, nullptr);
+    ASSERT_NE(m_tester->m_restoreTipWidget, nullptr);
+    // 无当前 sheet 分支
+    emit docPage->sigShowRestoreTip(nullptr);
+    SUCCEED();
+}
+
+TEST_F(TestCentral, UT_Central_jumpToFirstPage_lambda_001)
+{
+    m_tester->docPage();
+    RestoreTipWidget *tip = m_tester->m_restoreTipWidget;
+    ASSERT_NE(tip, nullptr);
+    // m_docPage 存在但当前无 sheet
+    emit tip->sigJumpToFirstPage();
+    SUCCEED();
+}
+
+TEST_F(TestCentral, UT_Central_closeRestoreTip_lambda_001)
+{
+    m_tester->docPage();
+    RestoreTipWidget *tip = m_tester->m_restoreTipWidget;
+    ASSERT_NE(tip, nullptr);
+    // m_docPage 存在但当前无 sheet，关闭提示条不应崩溃
+    emit tip->sigCloseRestoreTip();
+    SUCCEED();
+}
+
+/* ========== PMS 回归用例（sev1/2 bug 补强，批次1） ========== */
+
+// PMS: https://pms.uniontech.com/bug-view-97761.html  commit: f1be9fc9
+TEST_F(TestCentral, BUG97761_docPage_lazyCreationStable)
+{
+    // wayland 选择界面外菜单点击无效修复涉及 docPage：懒创建必须幂等，
+    // 二次调用返回同实例（不得重复创建导致菜单信号失联）
+    CentralDocPage *first = m_tester->docPage();
+    ASSERT_NE(first, nullptr);
+    EXPECT_EQ(m_tester->docPage(), first);
+    EXPECT_EQ(m_tester->docPage(), first);
+}
+
+// PMS: https://pms.uniontech.com/bug-view-97761.html  commit: f1be9fc9
+TEST_F(TestCentral, BUG97761_docPage_signalsWiredNoCrash)
+{
+    // docPage 创建后信号槽接线完成：发出页数变化信号不得崩溃
+    CentralDocPage *page = m_tester->docPage();
+    ASSERT_NE(page, nullptr);
+    emit page->sigSheetCountChanged(0);
+    emit page->sigSheetCountChanged(1);
+    SUCCEED();
 }

@@ -1,5 +1,5 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2019 - 2026 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2023 -2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -7,6 +7,7 @@
 #define DOCUMENTMODEL_H
 
 #include "Global.h"
+#include "Navigation.h"
 #include "dpdfpage.h"
 
 #include <QList>
@@ -40,6 +41,7 @@ struct Link {
     qreal left = 0;
     qreal top = 0;
     QString urlOrFileName;
+    std::optional<NavigationTarget> navigation;
     Link() : boundary(), page(-1), left(0.0), top(0.0), urlOrFileName() {}
     Link(const QPainterPath &boundary, int page, qreal left = 0.0, qreal top = 0.0) : boundary(boundary), page(page), left(left), top(top), urlOrFileName() {}
     Link(const QRectF &boundingRect, int page, qreal left = 0.0, qreal top = 0.0) : boundary(), page(page), left(left), top(top), urlOrFileName() { boundary.addRect(boundingRect); }
@@ -50,6 +52,8 @@ struct Link {
 
     bool isValid() const
     {
+        if (navigation)
+            return navigation->isValid();
         return page >= 1 || !urlOrFileName.isEmpty();
     }
 };
@@ -67,6 +71,8 @@ struct Section {
     QPointF offsetPointF;
     QString title;
     Outline children;
+    std::optional<NavigationTarget> navigation;
+    std::optional<bool> expanded;
 };
 
 struct Word {
@@ -129,7 +135,7 @@ class Annotation : public QObject
 public:
     Annotation() : QObject() {}
 
-    virtual ~Annotation() {}
+    virtual ~Annotation() {} // LCOV_EXCL_LINE
 
     virtual QList<QRectF> boundary() const = 0;
 
@@ -182,7 +188,15 @@ public:
     virtual ~Page() {}
 
     virtual QSizeF sizeF() const = 0;
+    virtual int resolution() const { return 72; }
     virtual QImage render(int width, int height, const QRect &slice = QRect()) const = 0;
+    /**
+     * @brief 图片对象包围盒(与 render(width,height) 整页输出像素对齐)
+     * 默认返回空(无对象信息的文档格式,夜间模式回退整页处理)
+     */
+    virtual QVector<QRectF> imageObjectRects(int width, int height) const
+    { Q_UNUSED(width) Q_UNUSED(height) return QVector<QRectF>(); }
+    // LCOV_EXCL_START
     virtual Link getLinkAtPoint(const QPointF &) { return Link(); }
     virtual QString text(const QRectF &rect) const = 0;
     virtual QString cachedText(const QRectF &rect) const { return text(rect); }
@@ -197,6 +211,7 @@ public:
     virtual bool updateAnnotation(Annotation *, const QString &, const QColor &) {return false;}
     virtual Annotation *addIconAnnotation(const QRectF &ponit, const QString &text) { Q_UNUSED(ponit) Q_UNUSED(text) return nullptr; }
     virtual Annotation *moveIconAnnotation(Annotation *annot, const QRectF &rect) { Q_UNUSED(annot) Q_UNUSED(rect) return nullptr; }
+    // LCOV_EXCL_STOP
 };
 
 class Document: public QObject
@@ -213,15 +228,20 @@ public:
     };
 
     Document() : QObject() {}
-    virtual ~Document() {}
+    virtual ~Document() {} // LCOV_EXCL_LINE
     virtual int pageCount() const = 0;
     virtual Page *page(int index) const = 0;
     virtual QStringList saveFilter() const = 0;
     virtual QString label(int) const { return QString(); }
     virtual bool save() const = 0;
     virtual bool saveAs(const QString &filePath) const = 0;
-    virtual Outline outline() const { return Outline(); }
+    virtual Outline outline() const { return Outline(); } // LCOV_EXCL_LINE
     virtual Properties properties() const = 0;
+    /**
+     * @brief 获取文档内置的唯一标识符（如 PDF 的 /ID）
+     * 用于在文件被移动/重命名后识别同一文档，返回空串表示无可用 ID
+     */
+    virtual QString fileIdentifier() const { return QString(); }
 };
 
 class DocumentFactory

@@ -1,5 +1,5 @@
 // Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -11,6 +11,7 @@
 #include "MainWindow.h"
 #include "ShortCutShow.h"
 #include "DBusObject.h"
+#include "RestoreTipWidget.h"
 #include "ddlog.h"
 
 #include <DMessageManager>
@@ -38,6 +39,32 @@ Central::Central(QWidget *parent)
     m_layout->setSpacing(0);
     m_layout->addWidget(m_navPage);
     m_mainWidget->setLayout(m_layout);
+
+    // 恢复阅读位置提示条
+    m_restoreTipWidget = new RestoreTipWidget(this);
+    m_restoreTipWidget->hide();
+    connect(m_restoreTipWidget, &RestoreTipWidget::sigJumpToFirstPage, this, [this]() {
+        if (m_docPage) {
+            DocSheet *sheet = m_docPage->getCurSheet();
+            if (sheet) {
+                sheet->dismissRestoreTip();
+                sheet->jumpToFirstPage();
+                m_restoreTipWidget->hide();
+            }
+        }
+    });
+
+    // 用户手动关闭提示条时，清除当前 sheet 的恢复标记，避免切换标签页再切回时重复出现。
+    // 本次打开文档期间不再提示；下次打开文档时 DocSheet::onOpened 会重新置位。
+    connect(m_restoreTipWidget, &RestoreTipWidget::sigCloseRestoreTip, this, [this]() {
+        if (m_docPage) {
+            DocSheet *sheet = m_docPage->getCurSheet();
+            if (sheet) {
+                sheet->dismissRestoreTip();
+                m_restoreTipWidget->hide();
+            }
+        }
+    });
 
     connect(DBusObject::instance(), &DBusObject::sigTouchPadEventSignal, this, &Central::onTouchPadEvent);
 
@@ -112,6 +139,24 @@ CentralDocPage *Central::docPage()
         connect(m_docPage, SIGNAL(sigSheetCountChanged(int)), this, SLOT(onSheetCountChanged(int)));
         connect(m_docPage, SIGNAL(sigNeedOpenFilesExec()), SLOT(onOpenFilesExec()));
         connect(m_docPage, SIGNAL(sigNeedActivateWindow()), this, SLOT(onNeedActivateWindow()));
+
+        // 监听恢复阅读位置提示信号（仅当发出者为当前 sheet 时显示）
+        connect(m_docPage, &CentralDocPage::sigShowRestoreTip, this, [this](DocSheet *sheet) {
+            if (!m_restoreTipWidget || !m_docPage)
+                return;
+            if (sheet && sheet == m_docPage->getCurSheet() && sheet->needsRestoreTip())
+                m_restoreTipWidget->showTip();
+        });
+
+        // 标签页切换时，根据当前 sheet 的恢复提示状态同步提示条显隐
+        connect(m_docPage, &CentralDocPage::sigCurSheetChanged, this, [this](DocSheet *sheet) {
+            if (!m_restoreTipWidget || !m_docPage)
+                return;
+            if (sheet && sheet->needsRestoreTip())
+                m_restoreTipWidget->showTip();
+            else
+                m_restoreTipWidget->hide();
+        });
     }
     // qCDebug(appLog) << "Getting doc page end";
     return m_docPage;
@@ -132,6 +177,9 @@ void Central::addFilesWithDialog()
     QStringList filters = {"*.pdf", "*.djvu", "*.docx"};
 #ifdef XPS_SUPPORT_ENABLED
     filters << "*.xps";
+#endif
+#ifdef OFD_SUPPORT_ENABLED
+    filters << "*.ofd";
 #endif
     dialog.setNameFilter(tr("Documents") + QStringLiteral(" (") + filters.join(' ') + QLatin1Char(')'));
     dialog.setDirectory(QDir::homePath());
@@ -233,6 +281,9 @@ void Central::onSheetCountChanged(int count)
         m_layout->setCurrentIndex(0);
         m_navPage->setFocus();
         m_widget->setControlEnabled(false);
+        // 所有标签页关闭时隐藏恢复提示条
+        if (m_restoreTipWidget)
+            m_restoreTipWidget->hide();
     }
 }
 
@@ -406,6 +457,9 @@ void Central::resizeEvent(QResizeEvent *event)
     // qCDebug(appLog) << "Central::resizeEvent start - size:" << event->size();
     m_mainWidget->move(0, 0);
     m_mainWidget->resize(event->size());
+    // 提示条跟随 Central 尺寸重新定位
+    if (m_restoreTipWidget && m_restoreTipWidget->isVisible())
+        m_restoreTipWidget->reposition();
     BaseWidget::resizeEvent(event);
     // qCDebug(appLog) << "Central::resizeEvent end";
 }

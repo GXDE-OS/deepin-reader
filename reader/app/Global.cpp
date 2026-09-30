@@ -1,5 +1,5 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2019 - 2026 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2023 -2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -41,6 +41,12 @@ FileType fileType(const QString &filePath)
         qCDebug(appLog) << "Matched XPS file type by MIME type";
         fileType = XPS;
 #endif
+#ifdef OFD_SUPPORT_ENABLED
+    } else if (filePath.right(4).toLower() == ".ofd") {
+        // OFD 是 ZIP 容器，按内容探测会得到 application/zip，统一按后缀判断
+        qCDebug(appLog) << "Matched OFD file type by extension";
+        fileType = OFD;
+#endif
     } else if (mimeType.name() == QLatin1String("application/zip") && filePath.right(4) == "pptx") {
         qCDebug(appLog) << "Matched PPTX file type";
         fileType = PPTX;
@@ -58,8 +64,32 @@ FileType fileType(const QString &filePath)
     return fileType;
 }
 
+bool supportsSearch(FileType fileType)
+{
+    if (fileType == PDF || fileType == DOCX)
+        return true;
+
+#ifdef XPS_SUPPORT_ENABLED
+    if (fileType == XPS)
+        return true;
+#endif
+
+#ifdef OFD_SUPPORT_ENABLED
+    if (fileType == OFD)
+        return true;
+#endif
+
+    return false;
+}
+
 bool isNetworkPath(const QString &filePath)
 {
+    // gvfs（smb/nfs 等用户态挂载）路径特征明确，先按字符串判断。
+    // 挂载断开后目录不存在，QStorageInfo 会返回无效而被误判为本地路径，
+    // 导致后续状态清理逻辑无法按网络文档的超时策略处理
+    if (filePath.startsWith("/run/user/") && filePath.contains("/gvfs/"))
+        return true;
+
     const QStorageInfo storage(filePath);
     if (!storage.isValid() || storage.isRoot())
         return false;
@@ -68,9 +98,6 @@ bool isNetworkPath(const QString &filePath)
     if (fsType.contains("nfs") || fsType.contains("cifs") ||
         fsType.contains("smb") || fsType.contains("sshfs") ||
         fsType.contains("gvfsd"))
-        return true;
-
-    if (filePath.startsWith("/run/user/") && filePath.contains("/gvfs/"))
         return true;
 
     return false;

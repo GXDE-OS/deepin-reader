@@ -7,9 +7,12 @@
 #include "DocSheet.h"
 #include "SideBarImageViewModel.h"
 #include "Application.h"
+#include "EyeProtectionManager.h"
 #include "MsgHeader.h"
 #include "ThumbnailWidget.h"
 #include "ddlog.h"
+
+#include <DGuiApplicationHelper>
 
 #include <QScroller>
 #include <QScrollBar>
@@ -28,6 +31,7 @@ SideBarImageListView::SideBarImageListView(DocSheet *sheet, QWidget *parent)
     setSpacing(4);
     setObjectName("sideBarImageListView");
     setFocusPolicy(Qt::ClickFocus);
+    viewport()->setObjectName("sideBarImageListViewViewport");
     setFrameShape(QFrame::NoFrame);
     setSelectionMode(QAbstractItemView::SingleSelection);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -42,6 +46,13 @@ SideBarImageListView::SideBarImageListView(DocSheet *sheet, QWidget *parent)
     connect(verticalScrollBar(), &QScrollBar::sliderPressed, this, &SideBarImageListView::onRemoveThumbnailListSlideGesture);
     connect(verticalScrollBar(), &QScrollBar::sliderReleased, this, &SideBarImageListView::onSetThumbnailListSlideGesture);
     qCDebug(appLog) << "Connected scrollbar signals";
+
+    // 护眼模式切换时刷新可见缩略图，使 ThumbnailDelegate 按新的页面外观重绘
+    connect(EyeProtectionManager::instance(), &EyeProtectionManager::modeChanged,
+            this, [this]() { this->viewport()->update(); });
+    // 页面内容跟随护眼模式，边框/文字等界面装饰仍跟随系统主题。
+    connect(DGuiApplicationHelper::instance(), &DGuiApplicationHelper::themeTypeChanged,
+            this, [this]() { this->viewport()->update(); });
 }
 
 
@@ -273,6 +284,7 @@ void SideBarImageListView::showNoteMenu(const QPoint &point)
         qCDebug(appLog) << "Creating new note menu";
         m_pNoteMenu = new DMenu(this);
         m_pNoteMenu->setAccessibleName("Menu_Note");
+        m_pNoteMenu->setObjectName("PNoteMenu");
 
         QAction *copyAction = m_pNoteMenu->addAction(tr("Copy"));
         connect(copyAction, &QAction::triggered, [this]() {
@@ -301,6 +313,7 @@ void SideBarImageListView::showBookMarkMenu(const QPoint &point)
     if (m_pBookMarkMenu == nullptr) {
         m_pBookMarkMenu = new DMenu(this);
         m_pBookMarkMenu->setAccessibleName("Menu_BookMark");
+        m_pBookMarkMenu->setObjectName("PBookMarkMenu");
 
         QAction *dltBookMarkAction = m_pBookMarkMenu->addAction(tr("Remove bookmark"));
         connect(dltBookMarkAction, &QAction::triggered, [this]() {

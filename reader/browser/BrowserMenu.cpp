@@ -1,4 +1,4 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
+// Copyright (C) 2019 ~ 2026 Uniontech Software Technology Co.,Ltd.
 // SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -16,6 +16,7 @@
 BrowserMenu::BrowserMenu(QWidget *parent) : DMenu(parent)
 {
     qCDebug(appLog) << "BrowserMenu created";
+    setAccessibleName("Menu_Browser");
     DFontSizeManager::instance()->bind(this, DFontSizeManager::T6);
     qCDebug(appLog) << "BrowserMenu::BrowserMenu() - Constructor completed";
 }
@@ -65,6 +66,7 @@ void BrowserMenu::initActions(DocSheet *sheet, int index, SheetMenuType_e type, 
             }
 
             m_pColorWidgetAction = new ColorWidgetAction(this);
+            m_pColorWidgetAction->setObjectName("PColorWidgetAction");
             connect(m_pColorWidgetAction, SIGNAL(sigBtnGroupClicked()), this, SLOT(onSetHighLight()));
             this->addAction(m_pColorWidgetAction);
         }
@@ -90,11 +92,7 @@ void BrowserMenu::initActions(DocSheet *sheet, int index, SheetMenuType_e type, 
         }
     } else if (type == DOC_MENU_KEY) {
         qCDebug(appLog) << "BrowserMenu::initActions() - Processing DOC_MENU_KEY";
-        if (sheet->fileType() == Dr::FileType::PDF || sheet->fileType() == Dr::FileType::DOCX
-#ifdef XPS_SUPPORT_ENABLED
-            || sheet->fileType() == Dr::FileType::XPS
-#endif
-        ) {
+        if (Dr::supportsSearch(sheet->fileType())) {
             createAction(tr("Search"), "Search");
             this->addSeparator();
         }
@@ -146,12 +144,8 @@ void BrowserMenu::initActions(DocSheet *sheet, int index, SheetMenuType_e type, 
         createAction(tr("Document info"), "DocumentInfo");
     } else {
         qCDebug(appLog) << "BrowserMenu::initActions() - Processing default menu type";
-        if (sheet->fileType() == Dr::FileType::PDF || sheet->fileType() == Dr::FileType::DOCX
-#ifdef XPS_SUPPORT_ENABLED
-            || sheet->fileType() == Dr::FileType::XPS
-#endif
-        ) {
-            qCDebug(appLog) << "BrowserMenu::initActions() - Adding search action for PDF/DOCX/XPS";
+        if (Dr::supportsSearch(sheet->fileType())) {
+            qCDebug(appLog) << "BrowserMenu::initActions() - Adding search action for searchable document";
             createAction(tr("Search"), "Search");
             this->addSeparator();
         }

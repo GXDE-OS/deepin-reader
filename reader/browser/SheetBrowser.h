@@ -1,5 +1,5 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2019 ~ 2026 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -132,6 +132,22 @@ public:
     void setCurrentPage(int page);
 
     /**
+     * @brief getScrollPosition
+     * 获取当前滚动位置（纵向偏移比例 0.0~1.0）
+     * 用于状态持久化
+     * @return 滚动位置比例
+     */
+    float getScrollPosition();
+
+    /**
+     * @brief restoreScrollPosition
+     * 恢复滚动位置
+     * 用于状态持久化
+     * @param position 滚动位置比例
+     */
+    void restoreScrollPosition(float position);
+
+    /**
      * @brief getExistImage
      * 获取文档页图片
      * @param index 页码编号
@@ -187,6 +203,7 @@ public:
      * @param index 哪一页
      */
     void jumpToOutline(const qreal  &left, const qreal &top, int page);
+    bool navigateTo(const deepin_reader::NavigationTarget &target);
 
     /**
      * @brief jumpToHighLight
@@ -261,6 +278,12 @@ public:
      * 搜索操作,弹出搜索框
      */
     void handlePrepareSearch();
+
+    /**
+     * @brief hideFindWidget
+     * 隐藏并销毁搜索框,切换标签页时调用,防止搜索串档
+     */
+    void hideFindWidget();
 
     /**
      * @brief jumpToNextSearchResult
@@ -347,6 +370,11 @@ public:
 
 signals:
     void sigPageChanged(int page);
+
+    /**
+     * @brief 布局重建完成（deform 返回后发出），供阅读位置恢复守卫判断布局稳定时机
+     */
+    void sigDeformed();
 
     void sigNeedPageFirst();
 

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -9,9 +9,11 @@
 
 #include <QDebug>
 
-SheetRenderer::SheetRenderer(DocSheet *parent) : QObject(parent), m_sheet(parent)
+// 无父对象:由DocSheet以QSharedPointer持有,去除了对DocSheet的反向依赖,
+// 使本对象可被worker线程通过共享引用安全使用
+SheetRenderer::SheetRenderer() : QObject(nullptr)
 {
-    qCDebug(appLog) << "Creating SheetRenderer for sheet:" << (parent ? parent->filePath() : "null");
+    qCDebug(appLog) << "Creating SheetRenderer (parentless, shared ownership)";
 }
 
 SheetRenderer::~SheetRenderer()
@@ -27,14 +29,15 @@ SheetRenderer::~SheetRenderer()
     qCDebug(appLog) << "关闭文档任务已添加";
 }
 
-bool SheetRenderer::openFileExec(const QString &password)
+bool SheetRenderer::openFileExec(const QString &password, const QString &filePath,
+                                 const QString &convertedFileDir, const QString &uuid, int fileType, DocSheet *sheet)
 {
     qCDebug(appLog) << "Executing synchronous file open";
     QEventLoop loop;
 
     connect(this, &SheetRenderer::sigOpened, &loop, &QEventLoop::quit);
 
-    openFileAsync(password);
+    openFileAsync(password, filePath, convertedFileDir, uuid, fileType, sheet);
 
     loop.exec();
 
@@ -45,16 +48,23 @@ bool SheetRenderer::openFileExec(const QString &password)
     return success;
 }
 
-void SheetRenderer::openFileAsync(const QString &password)
+void SheetRenderer::openFileAsync(const QString &password, const QString &filePath,
+                                  const QString &convertedFileDir, const QString &uuid, int fileType, DocSheet *sheet)
 {
     qCDebug(appLog) << "Starting asynchronous file open";
     DocOpenTask task;
 
-    task.sheet = m_sheet;
-
     task.password = password;
 
-    task.renderer = this;
+    task.uuid = uuid;
+
+    task.filePath = filePath;
+
+    task.convertedFileDir = convertedFileDir;
+
+    task.fileType = fileType;
+
+    task.sheet = sheet; //仅供主线程回调路由,worker线程不访问
 
     PageRenderThread::appendTask(task);
     qCDebug(appLog) << "SheetRenderer::openFileAsync end";
@@ -84,6 +94,16 @@ QImage SheetRenderer::getImage(int index, int width, int height, const QRect &sl
     QImage image = m_pages.value(index)->render(width, height, slice);
     qCDebug(appLog) << "SheetRenderer::getImage end";
     return image;
+}
+
+QVector<QRectF> SheetRenderer::getImageObjectRects(int index, int width, int height)
+{
+    if (m_pages.count() <= index || index < 0) {
+        qCWarning(appLog) << "getImageObjectRects invalid page index:" << index;
+        return QVector<QRectF>();
+    }
+
+    return m_pages.value(index)->imageObjectRects(width, height);
 }
 
 deepin_reader::Link SheetRenderer::getLinkAtPoint(int index, const QPointF &point)
@@ -252,6 +272,13 @@ bool SheetRenderer::save()
     }
     qCDebug(appLog) << "SheetRenderer::save end, success:" << success;
     return success;
+}
+
+QString SheetRenderer::fileIdentifier() const
+{
+    if (m_document == nullptr)
+        return QString();
+    return m_document->fileIdentifier();
 }
 
 void SheetRenderer::loadPageLable()

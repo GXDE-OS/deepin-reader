@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2023 -2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -108,6 +108,13 @@ QImage PDFPage::render(int width, int height, const QRect &slice) const
     QImage result = m_page->image(width, height, ratioRect);
     // qCDebug(appLog) << "PDFPage::render() - Render completed";
     return result;
+}
+
+QVector<QRectF> PDFPage::imageObjectRects(int width, int height) const
+{
+    LOCK_DOCUMENT
+
+    return m_page->imageObjectRects(width, height);
 }
 
 Link PDFPage::getLinkAtPoint(const QPointF &pos)
@@ -494,6 +501,13 @@ bool PDFDocument::save() const
     qCInfo(appLog) << "Saving PDF document";
 
     return m_document->save();
+}
+
+QString PDFDocument::fileIdentifier() const
+{
+    if (!m_document)
+        return QString();
+    return m_document->fileIdentifier();
 }
 
 bool PDFDocument::saveAs(const QString &filePath) const

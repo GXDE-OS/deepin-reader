@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
@@ -245,7 +245,7 @@ bool DPdfDoc::save()
 
     QTemporaryDir tempDir;
 
-    QString tempFilePath = tempDir.path() + "/" + QUuid::createUuid().toString();
+    QString tempFilePath = tempDir.path() + "/" + QUuid::createUuid().toString(QUuid::WithoutBraces);
 
     saveWriter.setFileName(tempFilePath);
 
@@ -269,9 +269,10 @@ bool DPdfDoc::save()
 
     QString targetPath = d_func()->m_filePath;
 
-    // Extract directory and filename to create hidden backup file
+    // Use a UUID-only hidden file as backup to avoid long filename
+    // issues with NAME_MAX (255 bytes) on the backup path.
     QFileInfo fileInfo(targetPath);
-    QString backupPath = fileInfo.absolutePath() + "/." + fileInfo.fileName() + ".backup." + QUuid::createUuid().toString();
+    QString backupPath = fileInfo.absolutePath() + "/." + QUuid::createUuid().toString(QUuid::WithoutBraces);
 
     QFile targetFile(targetPath);
 
@@ -333,6 +334,8 @@ bool DPdfDoc::saveAs(const QString &filePath)
     bool result = FPDF_SaveAsCopy(reinterpret_cast<FPDF_DOCUMENT>(d_func()->m_docHandler), &write, FPDF_NO_INCREMENTAL);
     locker.unlock();
 
+    saveWriter.flush(); // Flush user buffer to kernel buffer
+    fsync(saveWriter.handle()); // Sync kernel buffer to disk
     saveWriter.close();
 
     return result;
@@ -346,6 +349,27 @@ QString DPdfDoc::filePath() const
 int DPdfDoc::pageCount() const
 {
     return d_func()->m_pageCount;
+}
+
+QString DPdfDoc::fileIdentifier() const
+{
+    FPDF_DOCUMENT doc = reinterpret_cast<FPDF_DOCUMENT>(d_func()->m_docHandler);
+    if (!doc)
+        return QString();
+
+    // 先查询所需缓冲区大小
+    unsigned long len = FPDF_GetFileIdentifier(doc, FILEIDTYPE_PERMANENT, nullptr, 0);
+    if (len == 0)
+        return QString();
+
+    QByteArray buf(len, '\0');
+    FPDF_GetFileIdentifier(doc, FILEIDTYPE_PERMANENT, buf.data(), len);
+
+    // PDF /ID 是原始字节串（通常为 16 字节 MD5），非 UTF-8 文本
+    // 转为十六进制字符串，确保可打印、可存储、可比较
+    // len 包含末尾 NUL，buf.size()-1 为实际数据长度
+    QByteArray data = QByteArray::fromRawData(buf.constData(), buf.size() - 1);
+    return QString::fromLatin1(data.toHex());
 }
 
 DPdfDoc::Status DPdfDoc::status() const

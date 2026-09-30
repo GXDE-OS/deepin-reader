@@ -373,11 +373,10 @@ DToolButton *SheetSidebar::createBtn(const QString &btnName, const QString &objN
 
 void SheetSidebar::resizeEvent(QResizeEvent *event)
 {
-    // qCDebug(appLog) << "SheetSidebar::resizeEvent start - size:" << event->size();
+    // 侧边栏宽度变化时的自适应缩放
     qreal scale = event->size().width() * 1.0 / LEFTMINWIDTH;
     adaptWindowSize(scale);
     BaseWidget::resizeEvent(event);
-    // qCDebug(appLog) << "SheetSidebar::resizeEvent end";
 }
 
 void SheetSidebar::adaptWindowSize(const double &scale)
@@ -549,14 +548,7 @@ bool SheetSidebar::event(QEvent *event)
     // qCDebug(appLog) << "SheetSidebar::event start - type:" << event->type();
     if (event->type() == QEvent::KeyPress) {
         QKeyEvent *key_event = static_cast<QKeyEvent *>(event);
-        const bool isMenuKey = (key_event->key() == Qt::Key_Menu);
-        const bool isAltM = (key_event->key() == Qt::Key_M
-                             && (key_event->modifiers() & Qt::AltModifier));
-        if ((isMenuKey || isAltM) && !key_event->isAutoRepeat()) {
-            // Consume the event so it does not propagate to Qt's mnemonic /
-            // accelerator handling — otherwise the same Alt+M keeps the
-            // accelerator state active after exec() returns, causing the
-            // popup to jump and requiring a second ESC to dismiss it.
+        if (key_event->key() == Qt::Key_Menu && !key_event->isAutoRepeat()) {
             showMenu();
             return true;
         }
@@ -586,4 +578,17 @@ void SheetSidebar::changeResetModelData()
         m_notesWidget->changeResetModelData();
     }
     // qCDebug(appLog) << "Changing reset model data end";
+}
+
+QStringList SheetSidebar::getExpandedSections() const
+{
+    if (m_catalogWidget)
+        return m_catalogWidget->getExpandedSections();
+    return QStringList();
+}
+
+void SheetSidebar::restoreExpandedSections(const QStringList &sections)
+{
+    if (m_catalogWidget)
+        m_catalogWidget->restoreExpandedSections(sections);
 }

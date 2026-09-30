@@ -1,5 +1,5 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2019 - 2026 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -7,6 +7,7 @@
 #include "HandleMenu.h"
 #include "DocSheet.h"
 #include "Global.h"
+#include "EyeProtectionAction.h"
 #include "ddlog.h"
 
 TitleMenu::TitleMenu(DWidget *parent)
@@ -32,7 +33,13 @@ TitleMenu::TitleMenu(DWidget *parent)
     QStringList thirdActionObjList = QStringList() << "Display in file manager" << "Magnifer";
     createActionMap(thirdActionList, thirdActionObjList);
 
+    // 阅读模式（护眼模式）菜单项
+    m_eyeProtectionAction = new EyeProtectionAction(this);
+    m_eyeProtectionAction->setObjectName("EyeProtectionAction");
+    this->addAction(m_eyeProtectionAction);
+
     m_handleMenu = new HandleMenu(this);
+    m_handleMenu->setObjectName("HandleMenu");
     m_handleMenu->setDisabled(true);
     m_handleMenu->setTitle(tr("Tools"));
     m_handleMenu->setAccessibleName("Menu_Hand");
@@ -64,12 +71,8 @@ void TitleMenu::onCurSheetChanged(DocSheet *sheet)
 
     QAction *searchAction = this->findChild<QAction *>("Search");
     if (searchAction) {
-        if (sheet->fileType() == Dr::PDF || sheet->fileType() == Dr::DOCX
-#ifdef XPS_SUPPORT_ENABLED
-            || sheet->fileType() == Dr::XPS
-#endif
-        ) {
-            qCDebug(appLog) << "Enabling search for PDF/DOCX";
+        if (Dr::supportsSearch(sheet->fileType())) {
+            qCDebug(appLog) << "Enabling search for searchable document";
             searchAction->setVisible(true);
         } else {
             qCDebug(appLog) << "Disabling search for other formats";

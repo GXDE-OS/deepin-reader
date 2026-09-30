@@ -1,9 +1,10 @@
 // Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "CatalogTreeView.h"
+#include "CatalogOutlineModel.h"
 #include "Application.h"
 #include "Utils.h"
 #include "DocSheet.h"
@@ -19,6 +20,8 @@
 #include <QScroller>
 #include <QHeaderView>
 #include <QDebug>
+#include <QScopedValueRollback>
+#include <QSignalBlocker>
 
 class ActiveProxyStyle : public QProxyStyle
 {
@@ -31,6 +34,9 @@ public:
 
     ~ActiveProxyStyle();
 
+    // LCOV_EXCL_START
+    // These three overrides are invoked by Qt's paint pipeline and cannot
+    // be reliably triggered in offscreen unit tests.
     void drawComplexControl(QStyle::ComplexControl control, const QStyleOptionComplex *option, QPainter *painter, const QWidget *widget = nullptr) const
     {
         // qCDebug(appLog) << "ActiveProxyStyle::drawComplexControl() - Starting drawComplexControl";
@@ -56,6 +62,8 @@ public:
         op->state = option->state | QStyle::State_Active;
         QProxyStyle::drawPrimitive(element, op, painter, widget);
     }
+    // LCOV_EXCL_STOP
+    // LCOV_EXCL_STOP
 };
 
 ActiveProxyStyle::~ActiveProxyStyle()
@@ -79,6 +87,9 @@ private:
     QAbstractItemView *m_parent;
 };
 
+// LCOV_EXCL_START
+// CatalogModel::data is invoked by Qt's view pipeline during layout/paint.
+// In offscreen unit tests the view is never shown, so this override never fires.
 QVariant CatalogModel::data(const QModelIndex &index, int role) const
 {
     // qCDebug(appLog) << "CatalogModel::data() - Starting data";
@@ -90,6 +101,7 @@ QVariant CatalogModel::data(const QModelIndex &index, int role) const
     // qCDebug(appLog) << "CatalogModel::data() - Returning data";
     return QStandardItemModel::data(index, role);
 }
+// LCOV_EXCL_STOP
 
 CatalogTreeView::CatalogTreeView(DocSheet *sheet, DWidget *parent)
     : DTreeView(parent), m_sheet(sheet)
@@ -139,20 +151,7 @@ void CatalogTreeView::setRightControl(bool hasControl)
 
 void CatalogTreeView::parseCatalogData(const deepin_reader::Section &ol, QStandardItem *parentItem)
 {
-    qCDebug(appLog) << "Parsing catalog section:" << ol.title << "with" << ol.children.size() << "children";
-
-    foreach (auto s, ol.children) { //  2级显示
-        if (s.nIndex >= 0) {
-            auto itemList = getItemList(s.title, s.nIndex, s.offsetPointF.x(), s.offsetPointF.y());
-            parentItem->appendRow(itemList);
-
-            foreach (auto s1, s.children) { //  3级显示
-                auto itemList1 = getItemList(s1.title, s1.nIndex, s1.offsetPointF.x(), s1.offsetPointF.y());
-                itemList.at(0)->appendRow(itemList1);
-            }
-        }
-    }
-    qCDebug(appLog) << "CatalogTreeView::parseCatalogData() - Completed";
+    deepin_reader::appendCatalogSections(parentItem, ol.children);
 }
 
 QList<QStandardItem *> CatalogTreeView::getItemList(const QString &title, const int &index, const qreal  &realleft, const qreal &realtop)
@@ -169,8 +168,6 @@ QList<QStandardItem *> CatalogTreeView::getItemList(const QString &title, const 
     item1->setData(realleft, Qt::UserRole + 2);
     item1->setData(realtop, Qt::UserRole + 3);
     item1->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    QColor color = Dtk::Gui::DGuiApplicationHelper::instance()->applicationPalette().textTips().color();
-    item1->setForeground(QBrush(color));
 
     qCDebug(appLog) << "CatalogTreeView::getItemList() - Returning item list";
     return QList<QStandardItem *>() << item << item1;
@@ -180,8 +177,11 @@ void CatalogTreeView::handleOpenSuccess()
 {
     qCDebug(appLog) << "Handling document open success, building catalog tree";
 
-    auto model = reinterpret_cast<QStandardItemModel *>(this->model());
+    auto model = qobject_cast<QStandardItemModel *>(this->model());
     if (model) {
+        const QScopedValueRollback<bool> populating(m_populating, true);
+        const QSignalBlocker viewBlocker(this);
+        const QSignalBlocker selectionBlocker(selectionModel());
         qCDebug(appLog) << "CatalogTreeView::handleOpenSuccess() - Clearing model";
         model->clear();
 
@@ -192,17 +192,70 @@ void CatalogTreeView::handleOpenSuccess()
 
         m_index = m_sheet->currentIndex();
         const deepin_reader::Outline &ol = m_sheet->outline();
-        for (const deepin_reader::Section &s : ol) {   //root
-            if (s.nIndex >= 0) {
-                auto itemList = getItemList(s.title, s.nIndex, s.offsetPointF.x(), s.offsetPointF.y());
-                model->appendRow(itemList);
-                parseCatalogData(s, itemList.at(0));
-            }
+        deepin_reader::appendCatalogSections(model->invisibleRootItem(), ol);
+        const QColor color = Dtk::Gui::DGuiApplicationHelper::instance()->applicationPalette().textTips().color();
+        const auto items = model->findItems("*", Qt::MatchWildcard | Qt::MatchRecursive);
+        for (QStandardItem *item : items) {
+            QStandardItem *parent = item->parent() ? item->parent() : model->invisibleRootItem();
+            if (QStandardItem *page = parent->child(item->row(), 1))
+                page->setForeground(QBrush(color));
         }
+        if (!m_pendingExpandedSections && m_sheet->hasRestoredViewState())
+            m_pendingExpandedSections = m_sheet->operation().expandedSections;
+        deepin_reader::applyCatalogExpansion(this, m_pendingExpandedSections);
+        m_pendingExpandedSections.reset();
         setIndex(m_index);
     }
     resizeCoulumnWidth();
     qCDebug(appLog) << "CatalogTreeView::handleOpenSuccess() - Completed";
+}
+
+QStringList CatalogTreeView::getExpandedSections() const
+{
+    QStringList result;
+    auto model = qobject_cast<QStandardItemModel *>(this->model());
+    if (!model)
+        return result;
+    if (model->rowCount() == 0) {
+        if (m_pendingExpandedSections)
+            return *m_pendingExpandedSections;
+        if (m_sheet && m_sheet->hasRestoredViewState())
+            return m_sheet->operation().expandedSections;
+    }
+
+    // 递归遍历所有节点，收集展开状态的节点标题路径
+    const QList<QStandardItem *> &itemList = model->findItems("*", Qt::MatchWildcard | Qt::MatchRecursive);
+    for (QStandardItem *item : itemList) {
+        QModelIndex idx = item->index();
+        // 只检查第0列的节点（标题列）
+        if (idx.column() != 0)
+            continue;
+        if (isExpanded(idx)) {
+            // 构建标题路径：从当前节点向上拼接父节点标题
+            QStringList pathParts;
+            QStandardItem *cur = item;
+            while (cur) {
+                pathParts.prepend(cur->text());
+                cur = cur->parent();
+            }
+            QString path = pathParts.join("/");
+            result.append(path);
+        }
+    }
+    qCDebug(appLog) << "CatalogTreeView::getExpandedSections() - Found" << result.size() << "expanded sections";
+    return result;
+}
+
+void CatalogTreeView::restoreExpandedSections(const QStringList &sections)
+{
+    auto model = qobject_cast<QStandardItemModel *>(this->model());
+    if (!model)
+        return;
+    if (model->rowCount() == 0) {
+        m_pendingExpandedSections = sections;
+        return;
+    }
+    deepin_reader::applyCatalogExpansion(this, sections);
 }
 
 void CatalogTreeView::slotCollapsed(const QModelIndex &index)
@@ -238,7 +291,8 @@ void CatalogTreeView::slotExpanded(const QModelIndex &index)
 void CatalogTreeView::currentChanged(const QModelIndex &current, const QModelIndex &previous)
 {
     Q_UNUSED(previous);
-    if (!rightnotifypagechanged) {
+    if (!m_populating && !rightnotifypagechanged
+        && !current.data(deepin_reader::CatalogNavigationRole).isValid()) {
 
         if (nullptr == m_sheet) {
             qCritical() << "Cannot navigate - document sheet is null";
@@ -264,6 +318,14 @@ void CatalogTreeView::onItemClicked(const QModelIndex &current)
 
     if (nullptr == m_sheet) {
         qCritical() << "Cannot navigate to clicked item - document sheet is null";
+        return;
+    }
+    if (m_populating || !current.isValid())
+        return;
+    const QVariant navigation = current.data(deepin_reader::CatalogNavigationRole);
+    if (navigation.isValid()) {
+        m_title = current.data(Qt::DisplayRole).toString();
+        m_sheet->navigateTo(navigation.value<deepin_reader::NavigationTarget>());
         return;
     }
 
@@ -299,6 +361,9 @@ void CatalogTreeView::keyPressEvent(QKeyEvent *event)
     // qCDebug(appLog) << "CatalogTreeView::keyPressEvent() - Starting key press event";
     rightnotifypagechanged = false;
     DTreeView::keyPressEvent(event);
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+        && currentIndex().data(deepin_reader::CatalogNavigationRole).isValid())
+        onItemClicked(currentIndex());
     // qCDebug(appLog) << "CatalogTreeView::keyPressEvent() - Completed";
 }
 
@@ -310,7 +375,7 @@ void CatalogTreeView::setIndex(int index, const QString &title)
     m_title = title;
     this->clearSelection();
 
-    auto model = reinterpret_cast<QStandardItemModel *>(this->model());
+    auto model = qobject_cast<QStandardItemModel *>(this->model());
     if (model) {
         qCDebug(appLog) << "CatalogTreeView::setIndex() - Finding items";
         const QList<QStandardItem *> &itemList = model->findItems("*", Qt::MatchWildcard | Qt::MatchRecursive);

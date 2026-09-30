@@ -14,6 +14,7 @@
 #include <QMutex>
 #include <QPointF>
 #include <QRectF>
+#include <QFutureWatcher>
 
 using namespace deepin_reader;
 
@@ -39,6 +40,15 @@ public:
     explicit BrowserPage(SheetBrowser *parent, int index, DocSheet *sheet);
 
     ~BrowserPage() override;
+
+    /**
+     * @brief existPage
+     * 判断页面是否存活(仅主线程调用)。渲染回包 handler 解引用 task.page
+     * 之前必须校验,避免向已析构页面回包
+     * @param page 待校验页面
+     * @return 存活返回 true
+     */
+    static bool existPage(const BrowserPage *page);
 
     /**
      * @brief 文档页缩放后的原区域 不受旋转影响
@@ -388,6 +398,25 @@ private:
      */
     bool isBigDoc();
 
+    /**
+     * @brief setImageObjectRects 接收渲染线程预取的图片对象 bbox
+     * 随整页渲染任务带回(物理像素坐标),夜间滤镜用它构建对象蒙版,
+     * 避免 UI 线程访问 PDFium 文档锁
+     * @param rects bbox 列表(物理像素,与 pixmapWidth/Height 的渲染输出对齐)
+     * @param pixmapWidth/Height rects 对应的渲染输出尺寸;
+     *        后续缩放后渲染尺寸变化时,paint 过渡帧按比例换算 bbox
+     */
+    void setImageObjectRects(const QVector<QRectF> &rects, int pixmapWidth, int pixmapHeight);
+
+    /**
+     * @brief startNightJob 在后台线程生成夜间图(QtConcurrent)
+     * paint 不再同步执行逐像素滤镜,杜绝卡顿;期间绘制旧图/占位层
+     */
+    void startNightJob();
+
+    /** 后台夜间滤镜完成回调:回填 m_nightPixmap 并重绘 */
+    void onNightImageReady();
+
 protected:
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget = nullptr) override;
 
@@ -435,6 +464,16 @@ private:
     int  m_bookmarkState = 0;                               // 当前书签状态 1为on 2为pressed 3为show
 
     QSizeF m_originSizeF;
+
+    QPixmap m_nightPixmap;      // 夜间模式智能反色缓存
+    bool m_nightDirty = true;   // 缓存失效标记，m_renderPixmap 变化时置 true
+
+    QVector<QRectF> m_imageRects;   // 图片对象 bbox(物理像素,渲染线程预取)
+    int m_rectsPixmapWidth = 0;     // m_imageRects 对应的渲染输出宽(物理像素,过渡帧换算用)
+    int m_rectsPixmapHeight = 0;    // m_imageRects 对应的渲染输出高
+    bool m_rectsFetched = false;    // m_imageRects 是否已随整页渲染更新
+    bool m_nightJobRunning = false; // 后台夜间滤镜任务在途标记
+    QFutureWatcher<QImage> *m_nightWatcher = nullptr; // 异步任务完成通知
 };
 
 #endif // BrowserPage_H

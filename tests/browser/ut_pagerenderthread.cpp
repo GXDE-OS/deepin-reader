@@ -1,14 +1,17 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2019 ~ 2026 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "PageRenderThread.h"
 #include "DocSheet.h"
 #include "BrowserPage.h"
+#include "SheetRenderer.h"
+#include "SideBarImageViewModel.h"
 #include "stub.h"
 
 #include <QDebug>
+#include <QEventLoop>
 #include <QStyleOptionGraphicsItem>
 #include <QPainter>
 #include <QGraphicsSceneMouseEvent>
@@ -33,7 +36,6 @@ void TestPageRenderThread::SetUp()
 
 void TestPageRenderThread::TearDown()
 {
-    PageRenderThread::destroyForever();
 }
 
 /**********桩函数*************/
@@ -55,6 +57,71 @@ void run_stub()
     g_funcName = __FUNCTION__;
     qInfo() << "chendu" << __FUNCTION__;
 }
+
+// Stubs for methods called inside onDoc*Finished slots (true-branch).
+// When task.sheet exists, the slot calls task.page/model/renderer methods.
+// These stubs are installed so nullptr page/model/renderer won't crash.
+static void handleRenderFinished_stub(const int &, const QPixmap &, const QRect &)
+{
+    g_funcName = __FUNCTION__;
+}
+
+// setImageObjectRects stub: night mode refactoring added this call before
+// handleRenderFinished in onDocPageNormalImageTaskFinished / onDocPageBigImageTaskFinished.
+// Stub prevents null-pointer dereference when task.page is nullptr.
+static void setImageObjectRects_stub(const QVector<QRectF> &, int, int)
+{
+}
+
+static void handleWordLoaded_stub(const QList<deepin_reader::Word> &)
+{
+    g_funcName = __FUNCTION__;
+}
+
+static void handleAnnotationLoaded_stub(const QList<deepin_reader::Annotation *> &)
+{
+    g_funcName = __FUNCTION__;
+}
+
+static void handleRenderThumbnail_stub(int, QPixmap, const QVector<QRectF> &)
+{
+    g_funcName = __FUNCTION__;
+}
+
+static void handleOpened_stub(deepin_reader::Document::Error, deepin_reader::Document *, QList<deepin_reader::Page *>)
+{
+    g_funcName = __FUNCTION__;
+}
+
+// DocSheet::uuid 档:返回固定uuid供任务校验比对
+static QString uuid_stub()
+{
+    return QStringLiteral("ut-sheet-uuid");
+}
+
+// DocSheet::renderer 档:占位渲染器(handleOpened已stub)。堆分配不释放,避免静态对象在 main 返回后析构
+static SheetRenderer *renderer_stub()
+{
+    static SheetRenderer *dummy = new SheetRenderer();
+    return dummy;
+}
+
+// Makes DocSheet::existSheet() return true so the onDoc*Finished slots
+// take the "sheet exists" branch without needing a real DocSheet (whose
+// destructor would otherwise start the render thread and deadlock the test).
+static bool existSheet_true_stub(DocSheet *)
+{
+    return true;
+}
+
+// Makes BrowserPage::existPage() return true so the onDoc*Finished guard
+// (nullptr == task.page || !existPage(task.page)) passes with a non-null
+// placeholder page whose handler methods are already stubbed.
+static bool existPage_true_stub(const BrowserPage *)
+{
+    return true;
+}
+
 /*********测试用例**********/
 //TEST_F(TestPageRenderThread, UT_PageRenderThread_clearImageTasks_001)
 //{
@@ -78,3 +145,486 @@ void run_stub()
 //    EXPECT_TRUE(m_tester->clearImageTasks(docsheet, browserpage, 0));
 
 //}
+
+//======================================================================
+// onDoc*Finished slots, false-branch (sheet == nullptr, existSheet false)
+//======================================================================
+
+// Tests onDocPageNormalImageTaskFinished when sheet does not exist.
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageNormalImageTaskFinished_001)
+{
+    DocPageNormalImageTask task;
+    task.sheet = nullptr;
+    task.page = nullptr;
+    task.pixmapId = 0;
+    QPixmap pix;
+    m_tester->onDocPageNormalImageTaskFinished(task, pix);
+    SUCCEED();
+}
+
+// Tests onDocPageSliceImageTaskFinished when sheet does not exist.
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageSliceImageTaskFinished_001)
+{
+    DocPageSliceImageTask task;
+    task.sheet = nullptr;
+    task.page = nullptr;
+    task.pixmapId = 0;
+    QPixmap pix;
+    m_tester->onDocPageSliceImageTaskFinished(task, pix);
+    SUCCEED();
+}
+
+// Tests onDocPageBigImageTaskFinished when sheet does not exist.
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageBigImageTaskFinished_001)
+{
+    DocPageBigImageTask task;
+    task.sheet = nullptr;
+    task.page = nullptr;
+    task.pixmapId = 0;
+    QPixmap pix;
+    m_tester->onDocPageBigImageTaskFinished(task, pix);
+    SUCCEED();
+}
+
+// Tests onDocPageWordTaskFinished when sheet does not exist.
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageWordTaskFinished_001)
+{
+    DocPageWordTask task;
+    task.sheet = nullptr;
+    task.page = nullptr;
+    QList<deepin_reader::Word> words;
+    m_tester->onDocPageWordTaskFinished(task, words);
+    SUCCEED();
+}
+
+// Tests onDocPageAnnotationTaskFinished when sheet does not exist.
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageAnnotationTaskFinished_001)
+{
+    DocPageAnnotationTask task;
+    task.sheet = nullptr;
+    task.page = nullptr;
+    QList<deepin_reader::Annotation *> annots;
+    m_tester->onDocPageAnnotationTaskFinished(task, annots);
+    SUCCEED();
+}
+
+// Tests onDocPageThumbnailTask when sheet does not exist.
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageThumbnailTask_001)
+{
+    DocPageThumbnailTask task;
+    task.sheet = nullptr;
+    task.model = nullptr;
+    task.index = 0;
+    QPixmap pix;
+    m_tester->onDocPageThumbnailTask(task, pix);
+    SUCCEED();
+}
+
+// Tests onDocOpenTask when sheet does not exist.
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocOpenTask_001)
+{
+    DocOpenTask task;
+    task.sheet = nullptr;
+    QList<deepin_reader::Page *> pages;
+    m_tester->onDocOpenTask(task, deepin_reader::Document::NoError, nullptr, pages);
+    SUCCEED();
+}
+
+//======================================================================
+// onDoc*Finished slots, true-branch (real sheet, existSheet true)
+// Stubs are installed so the forwarded calls on null page/model/renderer
+// don't crash.
+//======================================================================
+
+// Tests onDocPageNormalImageTaskFinished when sheet exists; forwards to
+// BrowserPage::handleRenderFinished (stubbed).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageNormalImageTaskFinished_002)
+{
+    Stub s;
+    s.set(ADDR(DocSheet, existSheet), existSheet_true_stub);
+    s.set(ADDR(BrowserPage, existPage), existPage_true_stub);
+    s.set(ADDR(BrowserPage, handleRenderFinished), handleRenderFinished_stub);
+    s.set(ADDR(BrowserPage, setImageObjectRects), setImageObjectRects_stub);
+
+    DocPageNormalImageTask task;
+    task.sheet = nullptr;   // existSheet is stubbed to return true anyway
+    task.page = reinterpret_cast<BrowserPage *>(0x1);   // non-null placeholder; handler methods are stubbed
+    task.pixmapId = 1;
+    QPixmap pix;
+    m_tester->onDocPageNormalImageTaskFinished(task, pix);
+    EXPECT_TRUE(g_funcName == "handleRenderFinished_stub");
+}
+
+// Tests onDocPageSliceImageTaskFinished when sheet exists; forwards to
+// BrowserPage::handleRenderFinished with slice (stubbed).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageSliceImageTaskFinished_002)
+{
+    Stub s;
+    s.set(ADDR(DocSheet, existSheet), existSheet_true_stub);
+    s.set(ADDR(BrowserPage, existPage), existPage_true_stub);
+    s.set(ADDR(BrowserPage, handleRenderFinished), handleRenderFinished_stub);
+
+    DocPageSliceImageTask task;
+    task.sheet = nullptr;
+    task.page = reinterpret_cast<BrowserPage *>(0x1);
+    task.pixmapId = 2;
+    task.slice = QRect(0, 0, 10, 10);
+    QPixmap pix;
+    m_tester->onDocPageSliceImageTaskFinished(task, pix);
+    EXPECT_TRUE(g_funcName == "handleRenderFinished_stub");
+}
+
+// Tests onDocPageBigImageTaskFinished when sheet exists; forwards to
+// BrowserPage::handleRenderFinished (stubbed).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageBigImageTaskFinished_002)
+{
+    Stub s;
+    s.set(ADDR(DocSheet, existSheet), existSheet_true_stub);
+    s.set(ADDR(BrowserPage, existPage), existPage_true_stub);
+    s.set(ADDR(BrowserPage, handleRenderFinished), handleRenderFinished_stub);
+    s.set(ADDR(BrowserPage, setImageObjectRects), setImageObjectRects_stub);
+
+    DocPageBigImageTask task;
+    task.sheet = nullptr;
+    task.page = reinterpret_cast<BrowserPage *>(0x1);
+    task.pixmapId = 3;
+    QPixmap pix;
+    m_tester->onDocPageBigImageTaskFinished(task, pix);
+    EXPECT_TRUE(g_funcName == "handleRenderFinished_stub");
+}
+
+// Tests onDocPageWordTaskFinished when sheet exists; forwards to
+// BrowserPage::handleWordLoaded (stubbed).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageWordTaskFinished_002)
+{
+    Stub s;
+    s.set(ADDR(DocSheet, existSheet), existSheet_true_stub);
+    s.set(ADDR(BrowserPage, existPage), existPage_true_stub);
+    s.set(ADDR(BrowserPage, handleWordLoaded), handleWordLoaded_stub);
+
+    DocPageWordTask task;
+    task.sheet = nullptr;
+    task.page = reinterpret_cast<BrowserPage *>(0x1);
+    QList<deepin_reader::Word> words;
+    m_tester->onDocPageWordTaskFinished(task, words);
+    EXPECT_TRUE(g_funcName == "handleWordLoaded_stub");
+}
+
+// Tests onDocPageAnnotationTaskFinished when sheet exists; forwards to
+// BrowserPage::handleAnnotationLoaded (stubbed).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageAnnotationTaskFinished_002)
+{
+    Stub s;
+    s.set(ADDR(DocSheet, existSheet), existSheet_true_stub);
+    s.set(ADDR(BrowserPage, existPage), existPage_true_stub);
+    s.set(ADDR(BrowserPage, handleAnnotationLoaded), handleAnnotationLoaded_stub);
+
+    DocPageAnnotationTask task;
+    task.sheet = nullptr;
+    task.page = reinterpret_cast<BrowserPage *>(0x1);
+    QList<deepin_reader::Annotation *> annots;
+    m_tester->onDocPageAnnotationTaskFinished(task, annots);
+    EXPECT_TRUE(g_funcName == "handleAnnotationLoaded_stub");
+}
+
+// Tests onDocPageThumbnailTask when sheet exists; forwards to
+// SideBarImageViewModel::handleRenderThumbnail (stubbed).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocPageThumbnailTask_002)
+{
+    Stub s;
+    s.set(ADDR(DocSheet, existSheet), existSheet_true_stub);
+    s.set(ADDR(SideBarImageViewModel, handleRenderThumbnail), handleRenderThumbnail_stub);
+
+    DocPageThumbnailTask task;
+    task.sheet = nullptr;
+    task.model = nullptr;
+    task.index = 5;
+    QPixmap pix;
+    m_tester->onDocPageThumbnailTask(task, pix);
+    EXPECT_TRUE(g_funcName == "handleRenderThumbnail_stub");
+}
+
+// Tests onDocOpenTask when sheet exists; forwards to SheetRenderer::handleOpened (stubbed).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocOpenTask_002)
+{
+    Stub s;
+    s.set(ADDR(DocSheet, existSheet), existSheet_true_stub);
+    s.set(ADDR(DocSheet, uuid), uuid_stub);
+    s.set(ADDR(DocSheet, renderer), renderer_stub);
+    s.set(ADDR(SheetRenderer, handleOpened), handleOpened_stub);
+
+    // onDocOpenTask会直接写 sheet->m_process(非函数调用,stub拦截不到),
+    // 因此用足够大的可写静态存储充当假sheet,而非非法地址
+    static unsigned char fake_sheet_storage[8192] = {};
+
+    DocOpenTask task;
+    task.sheet = reinterpret_cast<DocSheet *>(fake_sheet_storage);   //成员调用均已被stub
+    task.uuid = "ut-sheet-uuid";                     //与uuid_stub一致,校验通过
+    QList<deepin_reader::Page *> pages;
+    m_tester->onDocOpenTask(task, deepin_reader::Document::NoError, nullptr, pages);
+    EXPECT_TRUE(g_funcName == "handleOpened_stub");
+}
+
+// Tests onDocOpenTask when uuid mismatch: task must be dropped, document/pages released.
+TEST_F(TestPageRenderThread, UT_PageRenderThread_onDocOpenTask_003)
+{
+    g_funcName.clear();
+    Stub s;
+    s.set(ADDR(DocSheet, existSheet), existSheet_true_stub);
+    s.set(ADDR(DocSheet, uuid), uuid_stub);
+    s.set(ADDR(DocSheet, renderer), renderer_stub);
+    s.set(ADDR(SheetRenderer, handleOpened), handleOpened_stub);
+
+    DocOpenTask task;
+    task.sheet = reinterpret_cast<DocSheet *>(0x1);
+    task.uuid = "stale-uuid";                                 //与uuid_stub不一致
+    QList<deepin_reader::Page *> pages;
+    m_tester->onDocOpenTask(task, deepin_reader::Document::NoError, nullptr, pages);
+    EXPECT_TRUE(g_funcName.isEmpty());
+}
+
+//======================================================================
+// appendTask overloads (static). Thread start is stubbed to keep the
+// queued tasks from running during the test.
+//======================================================================
+
+// Tests appendTask(DocPageNormalImageTask).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_appendTask_NormalImage)
+{
+    Stub s;
+    s.set(ADDR(QThread, start), start_stub);
+
+    DocPageNormalImageTask task;
+    task.sheet = nullptr;
+    task.page = nullptr;
+    PageRenderThread::appendTask(task);
+    EXPECT_FALSE(m_tester->m_pageNormalImageTasks.isEmpty());
+    m_tester->m_pageNormalImageTasks.clear();
+}
+
+// Tests appendTask(DocPageSliceImageTask).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_appendTask_SliceImage)
+{
+    Stub s;
+    s.set(ADDR(QThread, start), start_stub);
+
+    DocPageSliceImageTask task;
+    task.sheet = nullptr;
+    task.page = nullptr;
+    PageRenderThread::appendTask(task);
+    EXPECT_FALSE(m_tester->m_pageSliceImageTasks.isEmpty());
+    m_tester->m_pageSliceImageTasks.clear();
+}
+
+// Tests appendTask(DocPageBigImageTask).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_appendTask_BigImage)
+{
+    Stub s;
+    s.set(ADDR(QThread, start), start_stub);
+
+    DocPageBigImageTask task;
+    task.sheet = nullptr;
+    task.page = nullptr;
+    PageRenderThread::appendTask(task);
+    EXPECT_FALSE(m_tester->m_pageBigImageTasks.isEmpty());
+    m_tester->m_pageBigImageTasks.clear();
+}
+
+// Tests appendTask(DocPageWordTask).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_appendTask_Word)
+{
+    Stub s;
+    s.set(ADDR(QThread, start), start_stub);
+
+    DocPageWordTask task;
+    task.sheet = nullptr;
+    task.page = nullptr;
+    PageRenderThread::appendTask(task);
+    EXPECT_FALSE(m_tester->m_pageWordTasks.isEmpty());
+    m_tester->m_pageWordTasks.clear();
+}
+
+// Tests appendTask(DocPageAnnotationTask).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_appendTask_Annotation)
+{
+    Stub s;
+    s.set(ADDR(QThread, start), start_stub);
+
+    DocPageAnnotationTask task;
+    task.sheet = nullptr;
+    task.page = nullptr;
+    PageRenderThread::appendTask(task);
+    EXPECT_FALSE(m_tester->m_pageAnnotationTasks.isEmpty());
+    m_tester->m_pageAnnotationTasks.clear();
+}
+
+// Tests appendTask(DocPageThumbnailTask).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_appendTask_Thumbnail)
+{
+    Stub s;
+    s.set(ADDR(QThread, start), start_stub);
+
+    DocPageThumbnailTask task;
+    task.sheet = nullptr;
+    task.model = nullptr;
+    task.index = 0;
+    PageRenderThread::appendTask(task);
+    EXPECT_FALSE(m_tester->m_pageThumbnailTasks.isEmpty());
+    m_tester->m_pageThumbnailTasks.clear();
+}
+
+// Tests appendTask(DocOpenTask).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_appendTask_Open)
+{
+    Stub s;
+    s.set(ADDR(QThread, start), start_stub);
+
+    DocOpenTask task;
+    task.sheet = nullptr;
+    PageRenderThread::appendTask(task);
+    EXPECT_FALSE(m_tester->m_openTasks.isEmpty());
+    m_tester->m_openTasks.clear();
+}
+
+// Tests appendTask(DocCloseTask).
+TEST_F(TestPageRenderThread, UT_PageRenderThread_appendTask_Close)
+{
+    Stub s;
+    s.set(ADDR(QThread, start), start_stub);
+
+    DocCloseTask task;
+    task.document = nullptr;
+    PageRenderThread::appendTask(task);
+    EXPECT_FALSE(m_tester->m_closeTasks.isEmpty());
+    m_tester->m_closeTasks.clear();
+}
+
+/**********execNextDocPageThumbnailTask*************/
+
+// DocSheet::existSheetByUuid 档：任务校验通过
+static bool existSheetByUuid_true_stub(const QString &)
+{
+    return true;
+}
+
+// execNextDocPageThumbnailTask: 预取图片对象 bbox（夜间/深色蒙版用）并随任务转发给模型
+static QVector<QRectF> g_imageRectsResult;   // getImageObjectRects 返回值（输入）
+static QVector<QRectF> g_forwardedRects;     // handleRenderThumbnail 收到的 bbox（输出）
+static QVector<QRectF> getImageObjectRects_stub(int, int, int)
+{
+    return g_imageRectsResult;
+}
+
+static bool opened_true_stub()
+{
+    return true;
+}
+
+static bool opened_false_stub()
+{
+    return false;
+}
+
+// 足够大的可写静态存储充当假 sheet（同 onDocOpenTask_002 做法）
+static unsigned char fake_sheet_storage[8192] = {};
+// 假 model：任务经信号转发到 onDocPageThumbnailTask 时以 existSheet+model 调 handleRenderThumbnail
+static unsigned char fake_model_storage[8192] = {};
+
+// 空删除器：测试结束不删除 renderer，避免 ~SheetRenderer 往任务池塞关闭任务
+// （会 start 真实工作线程，与测试拆解竞态导致堆损坏）
+static void thumbnailRendererNoopDeleter(SheetRenderer *) {}
+
+static QImage getImage_stub(int, int, int, const QRect &)
+{
+    QImage img(174, 174, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::white);
+    return img;
+}
+
+// 成员函数桩：首参占位 this（Itanium ABI 下成员函数≈隐式 this 的自由函数），
+// 否则实参寄存器整体错位，解引用 rects 会读到垃圾内存
+static void handleRenderThumbnail_rects_stub(SideBarImageViewModel *, int, QPixmap, const QVector<QRectF> &rects)
+{
+    g_funcName = "handleRenderThumbnail_rects_stub";
+    g_forwardedRects = rects;
+}
+
+TEST_F(TestPageRenderThread, UT_PageRenderThread_execNextDocPageThumbnailTask_prefetchesImageRects)
+{
+    // renderStub 由 RAII 管理恢复，避免影响后续用例
+    Stub s;
+    const QVector<QRectF> rects { QRectF(1, 2, 3, 4) };
+    g_imageRectsResult = rects;
+    g_funcName.clear();
+
+    s.set(ADDR(DocSheet, existSheetByUuid), existSheetByUuid_true_stub);
+    // 任务经信号转发到 onDocPageThumbnailTask，其中以 existSheet 校验后调 handleRenderThumbnail
+    s.set(ADDR(DocSheet, existSheet), existSheet_true_stub);
+    s.set(ADDR(SheetRenderer, getImage), getImage_stub);
+    s.set(ADDR(SheetRenderer, opened), opened_true_stub);
+    s.set(ADDR(SheetRenderer, getImageObjectRects), getImageObjectRects_stub);
+    s.set(ADDR(SideBarImageViewModel, handleRenderThumbnail), handleRenderThumbnail_rects_stub);
+
+    DocPageThumbnailTask task;
+    task.sheet = reinterpret_cast<DocSheet *>(fake_sheet_storage);   // 成员调用均已被桩
+    task.uuid = "ut-sheet-uuid";                      // 与 uuid_stub 一致，校验通过
+    // renderer 为空会提前结束任务；空删除器避免析构竞态（见 thumbnailRendererNoopDeleter）
+    task.renderer = QSharedPointer<SheetRenderer>(renderer_stub(), &thumbnailRendererNoopDeleter);
+    task.model = reinterpret_cast<SideBarImageViewModel *>(fake_model_storage);  // 槽内 model->handleRenderThumbnail 已被桩
+    task.index = 0;
+    m_tester->m_pageThumbnailTasks.append(task);
+
+    EXPECT_TRUE(m_tester->execNextDocPageThumbnailTask());
+    EXPECT_TRUE(m_tester->m_pageThumbnailTasks.isEmpty());
+    // sigDocPageThumbnailTaskFinished 为 QueuedConnection，手动派发队列中的槽调用
+    QEventLoop loop;
+    QMetaObject::invokeMethod(&loop, "quit", Qt::QueuedConnection);
+    loop.exec();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+    // 任务转发到 handleRenderThumbnail，且预取的 bbox 原样传给模型
+    EXPECT_TRUE(g_funcName == "handleRenderThumbnail_rects_stub");
+    EXPECT_TRUE(g_forwardedRects == rects);
+    g_imageRectsResult.clear();
+    g_forwardedRects.clear();
+}
+
+// 渲染器未打开时不预取 bbox，任务照常转发（imageRects 为空）
+TEST_F(TestPageRenderThread, UT_PageRenderThread_execNextDocPageThumbnailTask_skipRectsWhenNotOpened)
+{
+    Stub s;
+    static const QVector<QRectF> kEmpty;
+    g_imageRectsResult = QVector<QRectF>() << QRectF(9, 9, 9, 9);   // 若被误取会带入任务
+    g_funcName.clear();
+
+    s.set(ADDR(DocSheet, existSheetByUuid), existSheetByUuid_true_stub);
+    // 任务经信号转发到 onDocPageThumbnailTask，其中以 existSheet 校验后调 handleRenderThumbnail
+    s.set(ADDR(DocSheet, existSheet), existSheet_true_stub);
+    s.set(ADDR(SheetRenderer, getImage), getImage_stub);
+    s.set(ADDR(SheetRenderer, opened), opened_false_stub);
+    s.set(ADDR(SheetRenderer, getImageObjectRects), getImageObjectRects_stub);
+    s.set(ADDR(SideBarImageViewModel, handleRenderThumbnail), handleRenderThumbnail_rects_stub);
+
+    DocPageThumbnailTask task;
+    task.sheet = reinterpret_cast<DocSheet *>(fake_sheet_storage);
+    task.uuid = "ut-sheet-uuid";
+    // renderer 为空会提前结束任务；空删除器避免析构竞态（见 thumbnailRendererNoopDeleter）
+    task.renderer = QSharedPointer<SheetRenderer>(renderer_stub(), &thumbnailRendererNoopDeleter);
+    task.model = reinterpret_cast<SideBarImageViewModel *>(fake_model_storage);  // 槽内 model->handleRenderThumbnail 已被桩
+    task.index = 0;
+    m_tester->m_pageThumbnailTasks.append(task);
+
+    EXPECT_TRUE(m_tester->execNextDocPageThumbnailTask());
+    // 同上：派发队列中的槽调用后再校验
+    QEventLoop loop2;
+    QMetaObject::invokeMethod(&loop2, "quit", Qt::QueuedConnection);
+    loop2.exec();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+    EXPECT_TRUE(g_funcName == "handleRenderThumbnail_rects_stub");
+    // 未预取：转发给模型的 bbox 应为空
+    EXPECT_TRUE(g_forwardedRects.isEmpty());
+    g_imageRectsResult.clear();
+    g_forwardedRects.clear();
+}
+
+// (NullInstance test removed: modifying s_quitForever corrupts global state
+//  and causes segfaults in subsequent DocSheet destructor tests.)

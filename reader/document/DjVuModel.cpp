@@ -43,6 +43,7 @@ namespace {
 
 using namespace deepin_reader;
 
+// LCOV_EXCL_START
 inline miniexp_t miniexp_cadddr(miniexp_t exp)
 {
     return miniexp_cadr(miniexp_cddr(exp));
@@ -61,6 +62,7 @@ inline miniexp_t skip(miniexp_t exp, int offset)
 
     return exp;
 }
+// LCOV_EXCL_STOP
 
 void clearMessageQueue(ddjvu_context_t *context, bool wait)
 {
@@ -438,6 +440,11 @@ QSizeF DjVuPage::sizeF() const
 {
     // qCDebug(appLog) << "DjVuPage::sizeF() - Returning page size:" << m_size;
     return m_size;
+}
+
+int DjVuPage::resolution() const
+{
+    return m_resolution > 0 ? m_resolution : 300;
 }
 
 QImage DjVuPage::render(int width, int height, const QRect &slice)const

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -12,6 +12,9 @@
 #include "Utils.h"
 #include "Global.h"
 #include "SheetRenderer.h"
+#include "EyeProtectionManager.h"
+#include "NightFilter.h"
+#include <QtConcurrent>
 #include "ddlog.h"
 
 #include <DGuiApplicationHelper>
@@ -30,10 +33,15 @@
 
 const int ICON_SIZE = 23;
 
+// 主线程专用的存活页注册表:入队时的 page 裸指针仅在回包时由主线程 handler 解引用,
+// handler 必须先经 existPage 校验,避免向已析构页面回包(UAF)
+static QSet<const BrowserPage *> g_alivePages;
+
 BrowserPage::BrowserPage(SheetBrowser *parent, int index, DocSheet *sheet) :
     QGraphicsItem(), m_sheet(sheet), m_parent(parent), m_index(index)
 {
     qCDebug(appLog) << "BrowserPage created, index:" << index;
+    g_alivePages.insert(this);
     setAcceptHoverEvents(true);
 
     setFlag(QGraphicsItem::ItemIsPanel);
@@ -45,7 +53,13 @@ BrowserPage::BrowserPage(SheetBrowser *parent, int index, DocSheet *sheet) :
 BrowserPage::~BrowserPage()
 {
     // qCDebug(appLog) << "BrowserPage destroyed, index:" << m_index;
+    g_alivePages.remove(this);
     PageRenderThread::clearImageTasks(m_sheet, this);
+    PageRenderThread::clearAllTasksForPage(this);
+
+    // 断开并销毁夜间异步任务 watcher:后台滤镜任务持有的都是副本,安全丢弃
+    delete m_nightWatcher;
+    m_nightWatcher = nullptr;
 
     qDeleteAll(m_annotations);
 
@@ -53,6 +67,12 @@ BrowserPage::~BrowserPage()
 
     qDeleteAll(m_words);
     // qCDebug(appLog) << "BrowserPage::~BrowserPage() - Destructor completed";
+}
+
+bool BrowserPage::existPage(const BrowserPage *page)
+{
+    // 仅主线程调用:注册表只在主线程增删,无需加锁
+    return g_alivePages.contains(page);
 }
 
 QRectF BrowserPage::boundingRect() const
@@ -150,7 +170,79 @@ void BrowserPage::paint(QPainter *painter, const QStyleOptionGraphicsItem *optio
         renderViewPort();
     }
 
-    painter->drawPixmap(0, 0, m_renderPixmap);  //m_renderPixmap的大小存在系统缩放，可能不等于option->rect()，需要按坐标绘制
+    EyeProtectionManager *epMgr = EyeProtectionManager::instance();
+
+    if (epMgr->mode() == EyeProtectionManager::Night) {
+        // 夜间模式：智能滤镜(对象蒙版 + CIELAB L* 反转)由后台线程异步生成,
+        // paint 只负责消费缓存结果,永不阻塞(旧实现同步逐像素转换是卡顿主因)
+        if (m_nightDirty || m_nightPixmap.isNull()) {
+            if (!m_nightJobRunning)
+                startNightJob();   // 后台生成,完成后 finished 回调重绘
+
+            if (!m_nightPixmap.isNull()
+                    && qFuzzyCompare(m_nightPixmap.width() / m_nightPixmap.devicePixelRatio(),
+                                     boundingRect().width())
+                    && qFuzzyCompare(m_nightPixmap.height() / m_nightPixmap.devicePixelRatio(),
+                                     boundingRect().height())) {
+                // 夜间图与当前尺寸一致(如仅注释/文字层重绘):直接沿用,无任何过渡
+                painter->drawPixmap(0, 0, m_nightPixmap);
+            } else {
+                // 尺寸变化(缩放/旋转/首帧):用最新日间渲染即时合成近似夜间观感,
+                // 与日间模式同拍零延迟;精确夜间图异步完成后自动替换
+                // (旧实现拉伸旧夜间图,缩放时图片区域明显滞后一拍)
+                painter->drawPixmap(0, 0, m_renderPixmap);
+
+                // 1) 整页快速反相:栅格化 Difference 合成,毫秒级;文字/背景观感
+                //    接近精确反转,彩色图片暂偏色,由下一步回贴原图修正
+                painter->save();
+                painter->setCompositionMode(QPainter::CompositionMode_Difference);
+                painter->fillRect(boundingRect(), Qt::white);
+                painter->restore();
+
+                // 2) 图片对象区回贴原图:照片零负片,缩放后 bbox 随渲染尺寸等比换算
+                if (!m_imageRects.isEmpty() && m_rectsPixmapWidth > 0
+                        && m_rectsPixmapHeight > 0) {
+                    const qreal kx = boundingRect().width() / m_rectsPixmapWidth;
+                    const qreal ky = boundingRect().height() / m_rectsPixmapHeight;
+                    painter->save();
+                    painter->setClipRect(boundingRect());
+                    // drawPixmap 源矩形不感知 DPR,需按设备像素换算
+                    const qreal dpr = dApp->devicePixelRatio();
+                    for (const QRectF &r : m_imageRects) {
+                        // 外扩 1 逻辑像素吸收边缘抗锯齿带,与 NightFilter 蒙版膨胀同理
+                        const QRectF target = QRectF(r.x() * kx - 1, r.y() * ky - 1,
+                                                     r.width() * kx + 2, r.height() * ky + 2)
+                                              & boundingRect();
+                        if (!target.isEmpty())
+                            painter->drawPixmap(target, m_renderPixmap,
+                                                QRectF(target.x() * dpr, target.y() * dpr,
+                                                       target.width() * dpr, target.height() * dpr));
+                    }
+                    painter->restore();
+                }
+            }
+        } else {
+            painter->drawPixmap(0, 0, m_nightPixmap);
+        }
+        // 叠加轻微深色半透明层降低整体亮度，保持文字清晰可读
+        QColor dark = epMgr->pageBackgroundColor();
+        dark.setAlpha(60);
+        painter->fillRect(boundingRect(), dark);
+    } else {
+        // 非夜间模式：绘制原图，并按需叠加护眼染色
+        painter->drawPixmap(0, 0, m_renderPixmap);  //m_renderPixmap的大小存在系统缩放，可能不等于option->rect()，需要按坐标绘制
+
+        if (epMgr->mode() != EyeProtectionManager::Off) {
+            QColor pageBg = epMgr->pageBackgroundColor();
+            // 经典/绿色护眼：正片叠底(Multiply)染色
+            // result = src * dest / 255
+            //   白色背景(255)被染为护眼色，黑色文字(0)保持深色不变
+            //   Multiply 不改变色相，图片/链接仅被染色，色相保持
+            painter->setCompositionMode(QPainter::CompositionMode_Multiply);
+            painter->fillRect(boundingRect(), pageBg);
+            painter->setCompositionMode(QPainter::CompositionMode_SourceOver);
+        }
+    }
 
     if (1 == m_bookmarkState)
         painter->drawPixmap(static_cast<int>(bookmarkRect().x()), static_cast<int>(bookmarkRect().y()), QIcon::fromTheme("dr_bookmark_hover").pixmap(QSize(39, 39)));
@@ -236,6 +328,7 @@ void BrowserPage::render(const double &scaleFactor, const Dr::Rotation &rotation
                                              static_cast<int>(boundingRect().height() * dApp->devicePixelRatio()));
             m_renderPixmap.setDevicePixelRatio(dApp->devicePixelRatio());
         }
+        m_nightDirty = true;  // m_renderPixmap 已更新，夜间模式反色缓存失效
 
         ++m_pixmapId;
 
@@ -248,6 +341,10 @@ void BrowserPage::render(const double &scaleFactor, const Dr::Rotation &rotation
             task.sheet = m_sheet;
 
             task.page = this;
+
+            task.renderer = m_sheet ? m_sheet->rendererPtr() : nullptr;
+            task.uuid = m_sheet ? m_sheet->uuid() : QString();
+            task.pageIndex = itemIndex();
 
             task.pixmapId = m_pixmapId;
 
@@ -264,6 +361,12 @@ void BrowserPage::render(const double &scaleFactor, const Dr::Rotation &rotation
             task.sheet = m_sheet;
 
             task.page = this;
+
+            task.renderer = m_sheet ? m_sheet->rendererPtr() : nullptr;
+            task.uuid = m_sheet ? m_sheet->uuid() : QString();
+            task.pageIndex = itemIndex();
+            task.scaleFactor = m_scaleFactor;
+            task.originSize = m_originSizeF;
 
             task.pixmapId = m_pixmapId;
 
@@ -284,6 +387,10 @@ void BrowserPage::render(const double &scaleFactor, const Dr::Rotation &rotation
             task.sheet = m_sheet;
 
             task.page = this;
+
+            task.renderer = m_sheet ? m_sheet->rendererPtr() : nullptr;
+            task.uuid = m_sheet ? m_sheet->uuid() : QString();
+            task.pageIndex = itemIndex();
 
             PageRenderThread::appendTask(task);
         }
@@ -313,6 +420,10 @@ void BrowserPage::renderRect(const QRectF &rect)
     task.sheet = m_sheet;
 
     task.page = this;
+
+    task.renderer = m_sheet ? m_sheet->rendererPtr() : nullptr;
+    task.uuid = m_sheet ? m_sheet->uuid() : QString();
+    task.pageIndex = itemIndex();
 
     task.pixmapId = m_pixmapId;
 
@@ -384,6 +495,13 @@ void BrowserPage::handleRenderFinished(const int &pixmapId, const QPixmap &pixma
     m_renderPixmap = m_pixmap;
 
     m_renderPixmap.setDevicePixelRatio(dApp->devicePixelRatio());
+
+    m_nightDirty = true;  // 渲染结果已更新，夜间模式反色缓存失效
+
+    // 夜间模式下渲染完成即后台生成夜间图,不等 paint 触发,缩短占位层显示时间
+    if (EyeProtectionManager::instance()->mode() == EyeProtectionManager::Night
+            && !m_nightJobRunning)
+        startNightJob();
 
     update();
     // qCDebug(appLog) << "BrowserPage::handleRenderFinished() - Handle render finished completed";
@@ -477,8 +595,16 @@ QImage BrowserPage::getImagePoint(double scaleFactor, QPoint point)
 
     int ss = static_cast<int>(122 * scaleFactor / m_scaleFactor);
 
-    QRect rect = QRect(qRound(point.x() * scaleFactor / m_scaleFactor - ss / 2.0),
-                       qRound(point.y() * scaleFactor / m_scaleFactor - ss / 2.0), ss, ss);
+    // 悬停点靠近页面边缘时，请求矩形可能超出整页画布；
+    // 文档模型拒绝越界渲染请求，需先与画布求交集（与 getImage 的取整方式保持一致）
+    const QRect canvas(0, 0, static_cast<int>(m_originSizeF.width() * scaleFactor),
+                              static_cast<int>(m_originSizeF.height() * scaleFactor));
+    const QRect rect = QRect(qRound(point.x() * scaleFactor / m_scaleFactor - ss / 2.0),
+                             qRound(point.y() * scaleFactor / m_scaleFactor - ss / 2.0), ss, ss)
+                           .intersected(canvas);
+
+    if (rect.isEmpty())
+        return QImage();
 
     return m_sheet->renderer()->getImage(itemIndex(),
                                          static_cast<int>(m_originSizeF.width() * scaleFactor),
@@ -564,6 +690,10 @@ void BrowserPage::loadWords()
 
     task.page = this;
 
+    task.renderer = m_sheet ? m_sheet->rendererPtr() : nullptr;
+    task.uuid = m_sheet ? m_sheet->uuid() : QString();
+    task.pageIndex = itemIndex();
+
     PageRenderThread::appendTask(task);
 
     m_wordHasRendered = false;
@@ -581,6 +711,8 @@ void BrowserPage::clearPixmap()
     m_pixmap = QPixmap();
 
     m_renderPixmap = m_pixmap;
+
+    m_nightDirty = true;  // pixmap 已清空，夜间模式反色缓存失效
 
     ++m_pixmapId;
 
@@ -899,7 +1031,7 @@ bool BrowserPage::removeAllAnnotation()
     for (int index = 0; index < m_annotations.size(); index++) {
         deepin_reader::Annotation *annota = m_annotations.at(index);
 
-        if (!m_annotations.contains(annota) || (annota && annota->contents().isEmpty()))
+        if (!annota || !m_annotations.contains(annota) || annota->contents().isEmpty())
             continue;
 
         annoBoundaries << annota->boundary();
@@ -1238,7 +1370,91 @@ bool BrowserPage::isBigDoc()
 #ifdef XPS_SUPPORT_ENABLED
     supportedType = supportedType || (Dr::XPS == m_sheet->fileType());
 #endif
+#ifdef OFD_SUPPORT_ENABLED
+    supportedType = supportedType || (Dr::OFD == m_sheet->fileType());
+#endif
     bool isBig = supportedType && boundingRect().width() > 1000 && boundingRect().height() > 1000;
     qCDebug(appLog) << "Checking if document is big:" << isBig;
     return isBig;
+}
+
+void BrowserPage::setImageObjectRects(const QVector<QRectF> &rects, int pixmapWidth, int pixmapHeight)
+{
+    m_imageRects = rects;
+    m_rectsPixmapWidth = pixmapWidth;
+    m_rectsPixmapHeight = pixmapHeight;
+    m_rectsFetched = true;
+}
+
+void BrowserPage::startNightJob()
+{
+    if (m_renderPixmap.isNull())
+        return;
+
+    // QPixmap -> QImage 转换必须在 GUI 线程完成,副本交给工作线程逐像素处理;
+    // 失败(如超大页内存不足)直接返回,不消费脏标记,后续渲染/paint 会重试
+    QImage src = m_renderPixmap.toImage();
+    if (src.format() != QImage::Format_ARGB32 && src.format() != QImage::Format_RGB32)
+        src = src.convertToFormat(QImage::Format_ARGB32);
+    if (src.isNull())
+        return;
+
+    // 消费脏标记:本任务对应"当前" m_renderPixmap;任务在途期间若有新渲染
+    // 结果写入(handleRenderFinished),会重新置脏,届时过期结果将被丢弃
+    m_nightDirty = false;
+    m_nightJobRunning = true;
+
+    // 蒙版 bbox 通常由渲染线程随整页渲染预取并带回;未命中时(如打开文档后
+    // 才切入夜间模式的存量页)在 UI 线程同步补取一次,页对象列表有缓存,代价低
+    QVector<QRectF> rects = m_imageRects;
+    if (!m_rectsFetched && m_sheet && m_sheet->renderer() && m_sheet->renderer()->opened()) {
+        rects = m_sheet->renderer()->getImageObjectRects(itemIndex(), src.width(), src.height());
+        m_rectsPixmapWidth = src.width();
+        m_rectsPixmapHeight = src.height();
+    }
+
+    // rects 是预取时渲染尺寸下的物理像素坐标;缩放/旋转后当前渲染尺寸不同,
+    // 必须等比换算到新尺寸,否则蒙版错位——实际照片区被反相,旧位置留下
+    // 原色残影(缩放残影的根因)
+    if (!rects.isEmpty() && m_rectsPixmapWidth > 0 && m_rectsPixmapHeight > 0
+            && (m_rectsPixmapWidth != src.width() || m_rectsPixmapHeight != src.height())) {
+        const qreal kx = qreal(src.width()) / m_rectsPixmapWidth;
+        const qreal ky = qreal(src.height()) / m_rectsPixmapHeight;
+        for (QRectF &r : rects)
+            r = QRectF(r.x() * kx, r.y() * ky, r.width() * kx, r.height() * ky);
+    }
+
+    EyeProtectionManager *epMgr = EyeProtectionManager::instance();
+
+    NightFilter::Options opt;
+    opt.imagePolicy = static_cast<NightFilter::ImagePolicy>(epMgr->nightImagePolicy());
+    opt.imageDimFactor = epMgr->nightImageDimFactor();
+
+    if (!m_nightWatcher) {
+        m_nightWatcher = new QFutureWatcher<QImage>();   // 无 parent:BrowserPage 非 QObject,在析构中手动删除
+        // 以 watcher 自身为接收者:BrowserPage 析构时 delete watcher 即断开连接,
+        // 后台任务仍在跑但结果被丢弃,不会回测已释放的 this
+        QObject::connect(m_nightWatcher, &QFutureWatcher<QImage>::finished,
+                m_nightWatcher, [this]() { onNightImageReady(); });
+    }
+
+    m_nightWatcher->setFuture(QtConcurrent::run([src, rects, opt]() {
+        // 纯函数 + 私有副本,无锁无线程安全风险;含蒙版构建/扫描页特判
+        return NightFilter::applyPage(src, rects, opt);
+    }));
+}
+
+void BrowserPage::onNightImageReady()
+{
+    m_nightJobRunning = false;
+
+    if (m_nightDirty) {
+        // 任务运行期间渲染结果又更新了:丢弃过期结果,重绘将重新发起
+        update();
+        return;
+    }
+
+    m_nightPixmap = QPixmap::fromImage(m_nightWatcher->result());
+    m_nightPixmap.setDevicePixelRatio(dApp->devicePixelRatio());
+    update();
 }

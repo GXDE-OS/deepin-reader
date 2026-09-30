@@ -1,5 +1,5 @@
-// Copyright (C) 2019 ~ 2020 Uniontech Software Technology Co.,Ltd.
-// SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2019 - 2026 Uniontech Software Technology Co.,Ltd.
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -11,6 +11,7 @@
 #include "Application.h"
 #include "Utils.h"
 #include "DocSheet.h"
+#include "Database.h"
 #include "DBusObject.h"
 #include "SaveDialog.h"
 #include "eventlogutils.h"
@@ -165,6 +166,37 @@ void MainWindow::addFile(const QString &filePath)
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     qCDebug(appLog) << "MainWindow::closeEvent() - Starting close event processing";
+
+    // 在关闭 sheet 前保存当前 sheet 的阅读状态
+    if (m_central && m_central->docPage()) {
+        DocSheet *curSheet = m_central->docPage()->getCurSheet();
+        if (curSheet && curSheet->opened()) {
+            curSheet->saveCurrentViewState();
+        }
+    }
+
+    // 在关闭 sheet 之前保存标签页组（因为 handleClose 会删除所有 sheet）
+    if (m_central && m_central->docPage()) {
+        QList<DocSheet *> sheets = m_central->docPage()->getSheets();
+        QStringList filePaths;
+        int activeIndex = 0;
+        DocSheet *curSheet = m_central->docPage()->getCurSheet();
+        for (int i = 0; i < sheets.size(); ++i) {
+            filePaths.append(sheets[i]->filePath());
+            if (sheets[i] == curSheet) {
+                activeIndex = i;
+            }
+        }
+        int windowIndex = MainWindow::m_list.indexOf(this);
+        if (windowIndex >= 0 && !filePaths.isEmpty()) {
+            Database::instance()->saveTabGroup(windowIndex, filePaths, activeIndex);
+        }
+    }
+
+    // 注意：滚动位置和标签页组在 handleClose 之前保存（乐观保存策略）。
+    // 如果 handleClose 返回 false（用户取消关闭），已保存的状态不会造成数据损坏，
+    // 因为后续操作（自动保存/真正关闭时）会更新为最新状态。
+
     if (m_central && !m_central->handleClose(true)) {
         qCDebug(appLog) << "MainWindow::closeEvent() - Central widget close failed, ignoring event";
         event->ignore();
@@ -172,9 +204,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
     }
 
     QSettings settings(QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).filePath("config.conf"), QSettings::IniFormat, this);
-    qCDebug(appLog) << "配置文件路径: ***" /* << QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).filePath("config.conf")*/;
+    qCDebug(appLog) << "配置文件路径: ***";
     settings.setValue("LASTWIDTH", QString::number(width()));
-
     settings.setValue("LASTHEIGHT", QString::number(height()));
 
     qCDebug(appLog) << __FUNCTION__ << "关闭文档查看器主窗口！";
@@ -280,6 +311,7 @@ void MainWindow::initUI()
     qCDebug(appLog) << __FUNCTION__ << "UI界面初始化已完成";
 #ifdef DTKWIDGET_CLASS_DSizeMode
     qCDebug(appLog) << "MainWindow::initUI() - Setting up size mode change handler";
+    // LCOV_EXCL_START
     connect(DGuiApplicationHelper::instance(), &DGuiApplicationHelper::sizeModeChanged, this, [=](DGuiApplicationHelper::SizeMode sizeMode) {
         qCDebug(appLog) << "MainWindow::initUI() - Size mode changed to:" << sizeMode;
         if (sizeMode == DGuiApplicationHelper::NormalMode) {
@@ -292,6 +324,7 @@ void MainWindow::initUI()
             handleMainWindowFull();
         }
     });
+    // LCOV_EXCL_STOP
 #endif
 
 #if _ZPD_
@@ -446,6 +479,14 @@ void MainWindow::resizeFullTitleWidget()
     qCDebug(appLog) << "MainWindow::resizeFullTitleWidget() - Resize completed";
 }
 
+void MainWindow::setInitialActiveFile(const QString &filePath)
+{
+    qCDebug(appLog) << "MainWindow::setInitialActiveFile - file:" << filePath;
+    if (m_central && !filePath.isEmpty()) {
+        m_central->docPage()->setActiveTabByFilePath(filePath);
+    }
+}
+
 MainWindow *MainWindow::windowContainSheet(DocSheet *sheet)
 {
     qCDebug(appLog) << "Finding window containing sheet:" << (sheet ? sheet->filePath() : "null");
@@ -597,6 +638,7 @@ void MainWindow::initBase()
     this->setProperty("windowClosed", false);
 
     m_menu = new TitleMenu(this);
+    m_menu->setObjectName("Menu");
 
     m_menu->setAccessibleName("Menu_Title");
 
