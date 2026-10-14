@@ -1,0 +1,47 @@
+# Maintainer: CharOfString <root@charofstring.cc>
+pkgname=deepin-reader-git
+pkgver=6.6.2
+pkgrel=1
+pkgdesc='Document viewer for GXDE (PDF, DjVu, XPS, OFD)'
+arch=('x86_64' 'aarch64')
+url="https://github.com/GXDE-OS/deepin-reader"
+# 3rdparty/deepin-pdfium 编译为 libdeepin-pdfium-reader 随包附带 ・ 3rdparty/deepin-pdfium is built into the bundled libdeepin-pdfium-reader.
+license=('GPL-3.0-or-later' 'LGPL-3.0-or-later' 'BSD-3-Clause' 'CC-BY-4.0' 'CC0-1.0')
+depends=('dtk6core-git' 'dtk6gui-git' 'dtk6widget-git' 'deepin-pdfium-git' 'librofd-ffi-git' 'qt6-base'
+         'qt6-5compat' 'qt6-svg' 'qt6-webengine' 'libgxps' 'cairo' 'glib2' 'djvulibre' 'libtiff'
+         'libjpeg-turbo' 'icu' 'libpng' 'zlib' 'lcms2' 'openjpeg2' 'freetype2' 'libchardet' 'libxkbcommon'
+         'libcups' 'hicolor-icon-theme' 'libgcc' 'libstdc++' 'glibc')
+makedepends=('git' 'cmake' 'ninja' 'pkgconf' 'qt6-tools')
+provides=('deepin-reader')
+conflicts=('deepin-reader' 'gxde-reader-git')
+source=()
+sha512sums=()
+
+# 直接使用 PKGBUILD 所在的 git 仓库作为源码 ・ Build from the git checkout this PKGBUILD lives in.
+_srcroot() {
+  git -C "$startdir" rev-parse --show-toplevel
+}
+
+build() {
+  # 自带的 PDFium 依赖间接包含 <cstdint>，当前的 GCC 不再间接提供，强制包含以免修改源码
+  # The bundled PDFium relies on <cstdint> being pulled in indirectly, which
+  # current GCC no longer does; force-include it instead of patching the source.
+  CXXFLAGS+=' -include cstdint'
+  # 与 debian/rules 相同 ・ Same as debian/rules.
+  cmake -B build -S "$(_srcroot)" -GNinja \
+    -DCMAKE_BUILD_TYPE=None \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DCMAKE_SAFETYTEST_ARG=CMAKE_SAFETYTEST_ARG_OFF \
+    -DAPP_VERSION="$pkgver" \
+    -DVERSION="$pkgver"
+  ninja -C build
+}
+
+package() {
+  DESTDIR="$pkgdir" ninja -C build install
+  # 与 debian/manpages 相同 ・ Same as debian/manpages.
+  install -Dm644 "$(_srcroot)/debian/deepin-reader.1" "$pkgdir/usr/share/man/man1/deepin-reader.1"
+  install -Dm644 "$(_srcroot)/3rdparty/deepin-pdfium/LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/deepin-pdfium-LICENSE"
+}
