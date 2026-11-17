@@ -1,5 +1,5 @@
 # Maintainer: CharOfString <root@charofstring.cc>
-pkgname=deepin-reader-git
+pkgname=deepin-reader
 pkgver=6.6.2
 pkgrel=1
 pkgdesc='Document viewer for GXDE (PDF, DjVu, XPS, OFD)'
@@ -7,13 +7,14 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/GXDE-OS/deepin-reader"
 # 3rdparty/deepin-pdfium 编译为 libdeepin-pdfium-reader 随包附带 ・ 3rdparty/deepin-pdfium is built into the bundled libdeepin-pdfium-reader.
 license=('GPL-3.0-or-later' 'LGPL-3.0-or-later' 'BSD-3-Clause' 'CC-BY-4.0' 'CC0-1.0')
-depends=('dtk6core-git' 'dtk6gui-git' 'dtk6widget-git' 'deepin-pdfium-git' 'librofd-ffi-git' 'qt6-base'
+depends=('gxde-dtk6core' 'gxde-dtk6gui' 'gxde-dtk6widget' 'gxde-deepin-pdfium' 'librofd-ffi' 'qt6-base'
          'qt6-5compat' 'qt6-svg' 'qt6-webengine' 'libgxps' 'cairo' 'glib2' 'djvulibre' 'libtiff'
          'libjpeg-turbo' 'icu' 'libpng' 'zlib' 'lcms2' 'openjpeg2' 'freetype2' 'libchardet' 'libxkbcommon'
          'libcups' 'hicolor-icon-theme' 'libgcc' 'libstdc++' 'glibc')
 makedepends=('git' 'cmake' 'ninja' 'pkgconf' 'qt6-tools')
-provides=('deepin-reader')
-conflicts=('deepin-reader' 'gxde-reader-git')
+provides=("deepin-reader-git=$pkgver")
+conflicts=('gxde-reader-git' 'deepin-reader-git')
+replaces=('deepin-reader-git')
 source=()
 sha512sums=()
 
