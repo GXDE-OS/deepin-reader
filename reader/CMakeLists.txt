@@ -10,6 +10,9 @@ endif()
 
 if (XPS_SUPPORT_ENABLED)
     pkg_check_modules(XPS_DEPS REQUIRED libgxps cairo glib-2.0 gobject-2.0 freetype2)
+    # XpsTextExtractor 直接调用 FreeType；pkgconf 3 合并查询时可能丢掉 -lfreetype，单独查询并链接
+    # XpsTextExtractor calls FreeType directly; pkgconf 3 may drop -lfreetype from the combined query
+    pkg_check_modules(XPS_FREETYPE REQUIRED freetype2)
 endif()
 
 if (OFD_SUPPORT_ENABLED)
@@ -135,7 +138,7 @@ set(READER_LINK_LIBS
 )
 
 if (XPS_SUPPORT_ENABLED)
-    list(APPEND READER_LINK_LIBS ${XPS_DEPS_LIBRARIES})
+    list(APPEND READER_LINK_LIBS ${XPS_DEPS_LIBRARIES} ${XPS_FREETYPE_LIBRARIES})
 endif()
 
 if (OFD_SUPPORT_ENABLED)
